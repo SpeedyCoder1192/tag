@@ -1326,6 +1326,15 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 
 		wanted.forEach(seat);
 
+		// bots out in boxes 5-6 come back in once the game's own boxes have room again
+		// (two free, so this never fights the keep-one-open rule above)
+		var freeCount = instances(T_SLOT).filter(function (sl) { return !sl.instance_vars[1]; }).length;
+		var back = extras.filter(function (e) { return wanted.indexOf(e.id) >= 0; })[0];
+		if (back && freeCount >= 2) {
+			extras = extras.filter(function (e) { return e !== back; });
+			input(back.id, "join");
+		}
+
 		// colours of players who've left are free again
 		var here = seatedPlayers().map(function (p) { return p.id; });
 		Object.keys(paints).forEach(function (id) { if (here.indexOf(+id) < 0) delete paints[id]; });
@@ -2319,8 +2328,9 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	// Players controlled on this device, whose tags light up when this mic is talking.
 	function localHumanIds() {
 		if (net.role === "guest") return [net.myHuman];
-		return instances(T_PLAYER).map(function (p) { return p.instance_vars[4]; })
-			.filter(function (id) { return id >= 1 && id <= 8 || id === TOUCH_ID; });
+		var ids = instances(T_PLAYER).map(function (p) { return p.instance_vars[4]; })
+			.concat(instances(T_SLOT).map(function (s) { return s.instance_vars[1]; }));
+		return ids.filter(function (id, i) { return (id >= 1 && id <= 8 || id === TOUCH_ID) && ids.indexOf(id) === i; });
 	}
 
 	// Host: who has voice on, and which players they are.
@@ -2972,6 +2982,22 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 					x: layer.layerToCanvas(p.x, p.y - lift, true), y: layer.layerToCanvas(p.x, p.y - lift, false) });
 			});
 		}
+		if (rt.running_layout.name === "Menu" && prefs.tags) {
+			var talkingNow = talkingIds();
+			var slotLayer = null;
+			instances(T_SLOT).forEach(function (sl) {
+				slotLayer = sl.layer;
+				if (!sl.instance_vars[1] || talkingNow.indexOf(sl.instance_vars[1]) < 0) return;
+				tags.push({ html: '<b class="spk"></b>' + px(")"), big: true,
+					x: sl.layer.layerToCanvas(sl.x, sl.y - 50, true), y: sl.layer.layerToCanvas(sl.x, sl.y - 50, false) });
+			});
+			if (slotLayer && maxPlayers() > 4) extras.forEach(function (e, k) {
+				if (talkingNow.indexOf(e.id) < 0) return;
+				var x = slotX(4 + k, 6);
+				tags.push({ html: '<b class="spk"></b>' + px(")"), big: true,
+					x: slotLayer.layerToCanvas(x, SLOT_Y - 50, true), y: slotLayer.layerToCanvas(x, SLOT_Y - 50, false) });
+			});
+		}
 		var rect = rt.canvas.getBoundingClientRect();
 		while (tagEls.length < tags.length) {
 			var el = document.createElement("div");
@@ -2984,6 +3010,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 			el.style.display = t ? "flex" : "none";
 			if (!t) return;
 			if (el.__html !== t.html) { el.innerHTML = t.html; el.__html = t.html; }
+			el.classList.toggle("big", !!t.big);
 			el.style.left = rect.left + t.x + "px";
 			el.style.top = rect.top + t.y + "px";
 		});
@@ -3025,7 +3052,6 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		'<div class="bp-title">' + px("CPU PLAYERS", 2) + "</div>" +
 		selector("count") + selector("level") + selector("limit") + selector("flash") +
 		'<div class="bp-note bp-test"></div>' +
-		'<div class="bp-extras"></div>' +
 		"</div>" +
 		'<div class="bp-box bp-right">' +
 		'<div class="bp-title">' + px("ONLINE", 2) + "</div>" +
@@ -3096,6 +3122,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		".nopx .px i{width:auto!important;height:auto;margin:0;background:none;font:700 13px monospace;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}" +
 		".nopx .px.s2 i{font-size:20px}.nopx .px.s3 i{font-size:28px}" +
 		".pingTag{position:fixed;z-index:5;transform:translate(-50%,-100%);pointer-events:none;display:flex;align-items:flex-end;gap:4px}" +
+		".pingTag.big{transform:translate(-50%,-100%) scale(2);transform-origin:50% 100%}" +
 		".pingTag .sig{display:flex;align-items:flex-end;gap:1px;padding-bottom:2px}" +
 		".pingTag .sig i{width:3px;background:currentColor;box-shadow:0 0 0 1px #000}" +
 		".pingTag .sig i:nth-child(1){height:4px}.pingTag .sig i:nth-child(2){height:7px}.pingTag .sig i:nth-child(3){height:10px}" +
@@ -3141,21 +3168,18 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	function note(text) { return '<div class="bp-note">' + px(text) + "</div>"; }
 
 	function renderOnline() {
-		var t = net.test;
+		var t = net.test, talking = voice.on ? talkingIds() : [];
 		setHtml(panel.querySelector(".bp-test"), net.role === "guest" ? px(net.shared.sons ? "THE HOST LETS YOU CHANGE THESE" : "SETTINGS ARE THE HOST'S") :
 			net.testing ? px("TESTING THIS DEVICE...") :
 			t ? px("SUGGESTED: " + t.suggest) + ' <button data-a="retest">' + px("RE-TEST") + "</button>" : "");
-
-		setHtml(panel.querySelector(".bp-extras"), extras.length ? note(extras.map(function (e, i) {
-			return "P" + (i + 5) + ": " + e.color + " " + (slotLabel(e.id) || (net.role === "guest" && net.pings[e.id] !== undefined ? net.pings[e.id] + "MS" : "CPU"));
-		}).join("  ")) : "");
 
 		var html;
 		if (net.role === "host") {
 			html = '<div class="bp-row"><div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div>" +
 				'<button data-a="stop">' + px("STOP") + "</button></div>" +
 				note("FRIENDS: " + (net.guests.length ? net.guests.map(function (g) {
-					return (g.ping ? g.ping + "MS" : "JOINING") + (g.bots.length ? " & " + g.bots.length + " BOT" + (g.bots.length > 1 ? "S" : "") : "");
+					return (g.ping ? g.ping + "MS" : "JOINING") + (g.bots.length ? " & " + g.bots.length + " BOT" + (g.bots.length > 1 ? "S" : "") : "") +
+						(talking.indexOf(g.human) >= 0 ? " (TALKING)" : "");
 				}).join(", ") : "NONE YET"));
 		} else if (net.role === "guest") {
 			html = note((net.status || "Connected") + (net.ping ? " - " + net.ping + "MS" : "") +
@@ -3237,6 +3261,54 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		refreshButtons();
 		renderOnline();
 		updateCorner();
+		layoutSlots();
+	}
+
+	// ---------- slots 5 and 6 ----------
+	// The game only has four player boxes. With a max of 5 or 6, the four slide over
+	// to make one row of six and two more boxes join them, drawn with the game's own
+	// empty box and the palette boxes, labelled like the game's.
+
+	var SLOT_W = 152, SLOT_GAP = 12, SLOT_Y = 224;
+	var extraSlots = document.createElement("div");
+	extraSlots.id = "extraSlots";
+	extraSlots.innerHTML = '<div class="xs"><span></span></div><div class="xs"><span></span></div>';
+
+	function slotX(i, n) { return (1024 - (n * SLOT_W + (n - 1) * SLOT_GAP)) / 2 + SLOT_W / 2 + i * (SLOT_W + SLOT_GAP); }
+
+	function maxPlayers() { return net.role === "guest" ? net.shared.limit || 4 : settings.limit; }
+
+	function layoutSlots() {
+		var onMenu = rt && rt.running_layout && rt.running_layout.name === "Menu";
+		var six = onMenu && maxPlayers() > 4;
+		// the game's four: their own spots, or one row of six
+		[T_SLOT, T_SLOTFILL].forEach(function (ti) {
+			instances(ti).forEach(function (inst) {
+				if (inst.homeX === undefined) inst.homeX = inst.x;
+				var x = six ? slotX(inst.instance_vars[0], 6) : inst.homeX;
+				if (inst.x !== x) { inst.x = x; inst.set_bbox_changed(); rt.redraw = true; }
+			});
+		});
+		extraSlots.style.display = six ? "block" : "none";
+		if (!six) return;
+		placeOver(extraSlots);
+		[].forEach.call(extraSlots.children, function (box, k) {
+			var e = extras[k], label = box.firstChild, open = k < maxPlayers() - 4;
+			box.style.left = slotX(4 + k, 6) - SLOT_W / 2 + "px";
+			box.style.opacity = open ? 1 : 0.35;   // a 5th box when the max is only 5
+			var look, text;
+			if (e) {
+				var idx = paintOf(e.id, e.color);
+				look = palette && palette.boxes[idx] ? "url(" + palette.boxes[idx].src + ") 0 0/100% 100% no-repeat" : "#e4453a";
+				text = slotLabel(e.id) || (net.role === "guest" && net.pings[e.id] !== undefined ? net.pings[e.id] + "ms" : "P" + (k + 5));
+			} else {
+				look = "url(playercolor-sheet0.png) -1px -1px/256px 256px no-repeat";   // the game's empty box
+				text = "P" + (k + 5);
+			}
+			if (box.__look !== look) { box.style.background = look; box.__look = look; }
+			if (label.__text !== text) { label.innerHTML = px(text, 2); label.__text = text; }
+			label.style.opacity = e ? 1 : 0.4;
+		});
 	}
 
 	// ---------- settings and the guide ----------
@@ -3306,7 +3378,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		{ title: "CPU PLAYERS", lines: [
 			"THE CPU PLAYERS BOX ON THE PLAYER SCREEN ADDS UP TO 5 BOTS.",
 			"LEVELS: EASY, MEDIUM, HARD AND IMPOSSIBLE. IMPOSSIBLE BOTS ARE FASTER THAN THE RULES ALLOW.",
-			"MAX IS HOW MANY CAN PLAY, UP TO 6. PLAYERS 5 AND 6 GET A LABEL OVER THEM.",
+			"MAX IS HOW MANY CAN PLAY, UP TO 6. PLAYERS 5 AND 6 GET THEIR OWN BOXES, AND A LABEL OVER THEM IN GAME.",
 			"THE DEVICE TEST SUGGESTS A MAX THAT WON'T LAG. RE-TEST TO RUN IT AGAIN."] },
 		{ title: "MOONWALK", lines: [
 			{ keys: "WHILE RUNNING, DOUBLE-TAP BACKWARDS. RUNNING RIGHT: HOLD [D], TAP [A] [A].", touch: "WHILE RUNNING, FLICK THE STICK BACKWARDS TWICE." },
@@ -3400,7 +3472,9 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 
 	var modalStyle = document.createElement("style");
 	modalStyle.textContent =
-		"#tagCorner,#tagModal{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
+		"#tagCorner,#tagModal,#extraSlots{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
+		"#extraSlots{z-index:9;display:none}" +
+		"#extraSlots .xs{position:absolute;top:" + (SLOT_Y - 45) + "px;width:152px;height:90px;display:flex;align-items:center;justify-content:center;image-rendering:pixelated}" +
 		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
 		// beside the game's own fullscreen and sound buttons, in their style
 		"#tagCorner button{position:absolute;top:8px;width:64px;height:64px;pointer-events:auto;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;" +
@@ -3484,6 +3558,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	document.head.appendChild(modalStyle);
 	document.body.appendChild(panel);
 	document.body.appendChild(cornerButtons);
+	document.body.appendChild(extraSlots);
 	document.body.appendChild(modal.el);
 	refreshButtons();
 	renderOnline();

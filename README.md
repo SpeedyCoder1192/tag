@@ -7,7 +7,8 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 
 - **CPU players** — 0–5 bots, Easy / Medium / Hard / Impossible. They path-find around
   each level using the game's own physics, chase, flee, juke and moonwalk.
-- **Up to 6 players** — the game has 4 slots; players 5 and 6 are added on top.
+- **Up to 6 players** — the game has 4 slots; with a max of 5 or 6 the player screen
+  becomes one row of six boxes, and players 5 and 6 are added into the level on top.
 - **Online play** — host a game and share the 5-letter code. Friends' devices run their
   own copy and get positions from the host, so it stays sharp; pings show over players.
   Host decides whether *thy sons* (friends) may change settings.
