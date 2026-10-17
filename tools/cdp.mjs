@@ -7,6 +7,8 @@ export async function open(url, tag, opts = {}) {
 	const prof = mkdtempSync(tmpdir() + "/tagprof-");
 	const args = [opts.oldHeadless ? "--headless=old" : "--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--window-size=1280,720", "--mute-audio", "about:blank"];
 	if (!opts.blockAudio) args.push("--autoplay-policy=no-user-gesture-required");
+	// a fake microphone (it plays a beep) that doesn't ask permission, for voice chat tests
+	if (opts.fakeMic) args.push("--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream");
 	const chrome = spawn("chromium", args, { stdio: "ignore" });
 	let tabs;
 	for (let i = 0; i < 50; i++) { try { tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); break; } catch { await sleep(200); } }

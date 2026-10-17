@@ -11,6 +11,9 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 - **Online play** — host a game and share the 5-letter code. Friends' devices run their
   own copy and get positions from the host, so it stays sharp; pings show over players.
   Host decides whether *thy sons* (friends) may change settings.
+- **Voice chat** — turn VOICE on in the online box and hold **V** (or **MIC** on touch) to
+  talk, or switch to open mic in settings. A speaker shows next to whoever's talking.
+  Needs the https:// address (browsers only allow microphones there).
 - **16 colours** — pick with left/right in the lobby (down leaves your slot).
 - **Flashbang levels 1–3** — get flashbanged for getting tagged, juked, camping a
   platform, or (on 3) for anything anyone does.
@@ -34,6 +37,7 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 | Drop through | S / Down | stick down |
 | Menus / start | Space, Enter | OK |
 | Moonwalk | while running, double-tap backwards | two quick flicks back |
+| Talk (voice chat) | hold V | hold MIC |
 
 ## Building
 

@@ -2258,7 +2258,8 @@
 		var el = touch.el = document.createElement("div");
 		el.id = "touchPad";
 		el.innerHTML = '<div class="tp-stick"><div class="tp-knob"></div></div>' +
-			'<div class="tp-buttons"><button class="tp-ok">' + px("OK") + '</button><button class="tp-jump">' + px("JUMP") + "</button></div>";
+			'<div class="tp-buttons"><button class="tp-mic" style="display:none">' + px("MIC") + '</button><button class="tp-ok">' + px("OK") +
+			'</button><button class="tp-jump">' + px("JUMP") + "</button></div>";
 		document.body.appendChild(el);
 
 		var stick = el.querySelector(".tp-stick"), knob = el.querySelector(".tp-knob"), dirs = {};
@@ -2278,6 +2279,11 @@
 		["pointerup", "pointercancel"].forEach(function (t) {
 			stick.addEventListener(t, function () { knob.style.transform = ""; setDirs(0, 0, 1); });
 		});
+		var mic = el.querySelector(".tp-mic");
+		mic.addEventListener("pointerdown", function (ev) { mic.setPointerCapture(ev.pointerId); mic.classList.add("down"); voice.held = true; micGate(); ev.preventDefault(); });
+		["pointerup", "pointercancel"].forEach(function (t) {
+			mic.addEventListener(t, function () { mic.classList.remove("down"); voice.held = false; micGate(); });
+		});
 		[[".tp-jump", "up"], [".tp-ok", "action"]].forEach(function (b) {
 			var btn = el.querySelector(b[0]);
 			btn.addEventListener("pointerdown", function (ev) { btn.setPointerCapture(ev.pointerId); btn.classList.add("down"); virtualKey(b[1], true); ev.preventDefault(); });
@@ -2295,6 +2301,156 @@
 		window.addEventListener("touchstart", function () { showTouch(true); }, { capture: true, passive: true });
 		window.addEventListener("keydown", function (ev) { if (ev.isTrusted) showTouch(false); }, true);
 		window.addEventListener("gamepadconnected", function () { showTouch(false); });
+	}
+
+	// ---------- voice chat ----------
+	// Online, everyone with VOICE on connects straight to everyone else with it on; the
+	// host tells everyone who's in the room. Push-to-talk by default (hold V, or the MIC
+	// button on the touch pad); open mic is in settings. A speaker shows in the tag of
+	// whoever's talking.
+
+	var voice = { on: false, stream: null, calls: {}, outs: {}, meters: {}, held: false, roster: [] };
+
+	function myPeerId() { return net.peer && net.peer.open ? net.peer.id : null; }
+
+	// Players controlled on this device, whose tags light up when this mic is talking.
+	function localHumanIds() {
+		if (net.role === "guest") return [net.myHuman];
+		return instances(T_PLAYER).map(function (p) { return p.instance_vars[4]; })
+			.filter(function (id) { return id >= 1 && id <= 8 || id === TOUCH_ID; });
+	}
+
+	// Host: who has voice on, and which players they are.
+	function voiceRoster() {
+		var list = [];
+		if (voice.on && myPeerId()) list.push({ peer: myPeerId(), ids: localHumanIds() });
+		net.guests.forEach(function (g) { if (g.voice) list.push({ peer: g.conn.peer, ids: [g.human] }); });
+		return list;
+	}
+
+	function setVoice(on) {
+		if (!on) { stopVoice(); tellHostVoice(); return refreshButtons(); }
+		if (!window.isSecureContext || !navigator.mediaDevices) {
+			setStatus("Voice needs the https:// address.");
+			return refreshButtons();
+		}
+		navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+			.then(function (stream) {
+				voice.stream = stream;
+				voice.on = true;
+				meter("me", stream);
+				micGate();
+				tellHostVoice();
+				refreshButtons();
+				showTouchMic();
+			}, function () {
+				setStatus("No microphone, or it was blocked.");
+				refreshButtons();
+			});
+	}
+
+	function stopVoice() {
+		Object.keys(voice.calls).forEach(function (p) { voice.calls[p].close(); dropCall(p); });
+		if (voice.stream) voice.stream.getTracks().forEach(function (t) { t.stop(); });
+		voice.stream = null;
+		voice.on = false;
+		delete voice.meters.me;
+		showTouchMic();
+	}
+
+	function tellHostVoice() {
+		if (net.role === "guest" && net.conn && net.conn.open) net.conn.send({ t: "voice", on: voice.on });
+	}
+
+	// Push-to-talk: the mic only sends while V (or MIC) is held; open mic always sends.
+	function micGate() {
+		if (!voice.stream) return;
+		var live = prefs.voiceMode === "open" || voice.held;
+		voice.stream.getAudioTracks().forEach(function (t) { t.enabled = live; });
+	}
+
+	function listenVoice(peer) {
+		peer.on("call", function (call) {
+			if (!voice.on) return call.close();
+			call.answer(voice.stream);
+			hookCall(call);
+		});
+	}
+
+	function hookCall(call) {
+		voice.calls[call.peer] = call;
+		call.on("stream", function (stream) {
+			var out = voice.outs[call.peer] || (voice.outs[call.peer] = new Audio());
+			out.srcObject = stream;
+			out.volume = prefs.voiceVol / 100;
+			out.play().catch(function () {});
+			meter(call.peer, stream);
+		});
+		["close", "error"].forEach(function (e) { call.on(e, function () { dropCall(call.peer); }); });
+	}
+
+	function dropCall(peer) {
+		delete voice.calls[peer];
+		delete voice.meters[peer];
+		if (voice.outs[peer]) { voice.outs[peer].srcObject = null; delete voice.outs[peer]; }
+	}
+
+	// A level meter on a stream, to light up the speaker icon.
+	function meter(key, stream) {
+		if (!fb.audio) return;
+		try {
+			var an = fb.audio.createAnalyser();
+			an.fftSize = 512;
+			fb.audio.createMediaStreamSource(stream).connect(an);
+			voice.meters[key] = { an: an, buf: new Float32Array(an.fftSize) };
+		} catch (e) {}
+	}
+
+	function loud(key) {
+		var m = voice.meters[key];
+		if (!m) return false;
+		m.an.getFloatTimeDomainData(m.buf);
+		var sum = 0;
+		for (var i = 0; i < m.buf.length; i++) sum += m.buf[i] * m.buf[i];
+		// speech comes in bursts: hold the level a moment so the icon doesn't flicker
+		m.hold = Math.max(Math.sqrt(sum / m.buf.length), (m.hold || 0) * 0.9);
+		return m.hold > 0.02;
+	}
+
+	// Input ids of everyone talking right now.
+	function talkingIds() {
+		var ids = [];
+		if (voice.on && (prefs.voiceMode === "open" || voice.held) && loud("me")) ids = ids.concat(localHumanIds());
+		voice.roster.forEach(function (r) { if (r.peer !== myPeerId() && loud(r.peer)) ids = ids.concat(r.ids); });
+		return ids;
+	}
+
+	// Once a second: call anyone in the room we're not talking to yet (the one with the
+	// lower id calls, so each pair connects once), and hang up on anyone who's gone.
+	setInterval(function () {
+		if (net.role === "host") voice.roster = voiceRoster();
+		if (!voice.on || !net.role || !myPeerId()) return;
+		var me = myPeerId(), here = {};
+		voice.roster.forEach(function (r) {
+			here[r.peer] = true;
+			if (r.peer === me || voice.calls[r.peer] || me > r.peer) return;
+			hookCall(net.peer.call(r.peer, voice.stream));
+		});
+		Object.keys(voice.calls).forEach(function (p) { if (!here[p]) { voice.calls[p].close(); dropCall(p); } });
+	}, 1000);
+
+	// Hold V to talk (not while typing a room code).
+	["keydown", "keyup"].forEach(function (type) {
+		window.addEventListener(type, function (ev) {
+			if (ev.code !== "KeyV" || ev.target.tagName === "INPUT" || ev.repeat) return;
+			voice.held = type === "keydown";
+			micGate();
+		}, true);
+	});
+
+	function showTouchMic() {
+		var b = touch.el && touch.el.querySelector(".tp-mic");
+		if (b) b.style.display = voice.on && prefs.voiceMode !== "open" ? "" : "none";
 	}
 
 	// ---------- online play ----------
@@ -2385,6 +2541,7 @@
 		for (var i = 0; i < 5; i++) code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
 		var peer = new Peer("c2tag-" + code);
 		net.role = "host"; net.peer = peer; net.code = code;
+		listenVoice(peer);
 		peer.on("open", function () { setStatus(""); });
 		peer.on("error", function (e) {
 			if (e.type === "unavailable-id") { peer.destroy(); return openRoom(); }
@@ -2443,6 +2600,8 @@
 				if (b[1] & (MOON_BITS.left | MOON_BITS.right)) requestMoonwalk(b[0], b[1] & MOON_BITS.left ? -1 : 1);
 				if (b[1] & BITS.up) g.presses.push([b[0], "up"]);
 			});
+		} else if (m.t === "voice") {
+			g.voice = !!m.on;
 		} else if (m.t === "pong") {
 			g.ping = Math.round(performance.now() - m.ts);
 		}
@@ -2520,7 +2679,7 @@
 			if (clock - lastLobby < 0.2) return;
 			lastLobby = clock;
 			var arr = rt.types_by_index[17].instances[0].arr;
-			msg = { t: "lobby", L: L, gs: gs, menu: gvar("currMenu"), shared: sharedSettings(), paints: paints,
+			msg = { t: "lobby", L: L, gs: gs, menu: gvar("currMenu"), shared: sharedSettings(), paints: paints, voice: voice.roster,
 				slots: instances(T_SLOT).map(function (s) { return [s.instance_vars[1], s.instance_vars[2]]; }),
 				labels: instances(T_SLOT).map(function (s) { return slotLabel(s.instance_vars[1]); }),
 				arr: arr.map(function (row) { return [row[0][0], row[1][0]]; }),
@@ -2535,7 +2694,7 @@
 				net.guests.forEach(function (g) { g.conn.send(net.plats); });
 			}
 			var t29 = instances(29)[0];
-			msg = { t: "s", L: L, gs: gs, tg: gvar("taggerID"), tm: t29 ? t29.instance_vars[0] : 0, shared: sharedSettings(), paints: paints,
+			msg = { t: "s", L: L, gs: gs, tg: gvar("taggerID"), tm: t29 ? t29.instance_vars[0] : 0, shared: sharedSettings(), paints: paints, voice: voice.roster,
 				mw: Object.keys(mw.view).map(function (slot) { var v = mw.view[slot]; return [+slot, v.start !== null ? 1 : 0, Math.round(v.cool * 10) / 10]; }),
 				p: instances(T_PLAYER).map(function (i) {
 					var plat = i.behavior_insts[0];
@@ -2560,6 +2719,8 @@
 
 	function stopOnline() {
 		var wasGuest = net.role === "guest";
+		stopVoice();
+		voice.roster = [];
 		net.guests.slice().forEach(function (g) { g.conn.close(); dropGuest(g); });
 		if (net.peer) net.peer.destroy();
 		net.role = null; net.peer = null; net.conn = null; net.code = ""; net.ping = 0; net.plats = null; net.platsFor = null;
@@ -2582,6 +2743,7 @@
 		loadPeerJS().then(function () {
 			var peer = new Peer();
 			net.role = "guest"; net.peer = peer;
+			listenVoice(peer);
 			peer.on("error", function (e) {
 				var msg = e.type === "peer-unavailable" ? "No game with that code." : "Online error: " + e.type;
 				if (net.role === "guest") stopOnline();
@@ -2589,7 +2751,7 @@
 			});
 			peer.on("open", function () {
 				var conn = net.conn = peer.connect("c2tag-" + code, { reliable: true, serialization: "json" });
-				conn.on("open", function () { setStatus("Connected"); sendWant(); });
+				conn.on("open", function () { setStatus("Connected"); sendWant(); tellHostVoice(); });
 				conn.on("data", guestMessage);
 				conn.on("close", function () { if (net.role === "guest") { stopOnline(); setStatus("The host left."); } });
 			});
@@ -2610,6 +2772,7 @@
 			net.host = m;
 			net.shared = m.shared || {};
 			if (m.paints) paints = m.paints;
+			if (m.voice) voice.roster = m.voice;
 			if (m.mw) {
 				var view = {};
 				m.mw.forEach(function (v) { view[v[0]] = { start: v[1] ? 0 : null, cool: v[2] }; });
@@ -2795,12 +2958,15 @@
 		var tags = [];
 		var layer = rt.getLayerByName("Players");
 		if (layer && rt.running_layout.name !== "Menu" && prefs.tags) {
+			var talking = talkingIds();
 			instances(T_PLAYER).forEach(function (p) {
-				var slot = p.instance_vars[2], ping = net.pings[p.instance_vars[4]];
+				var slot = p.instance_vars[2], ping = net.pings[p.instance_vars[4]], speaking = talking.indexOf(p.instance_vars[4]) >= 0;
 				var text = (slot >= 4 ? "P" + (slot + 1) : "") + (ping !== undefined ? (slot >= 4 ? " - " : "") + (ping ? ping + "ms" : "...") : "");
-				if (!text) return;
-				tags.push({ html: px(text, 1) + (ping ? '<b class="sig ' + pingLevel(ping) + '"><i></i><i></i><i></i></b>' : ""),
-					x: layer.layerToCanvas(p.x, p.y - 44, true), y: layer.layerToCanvas(p.x, p.y - 44, false) });
+				if (!text && !speaking) return;
+				// whoever's "it" has the game's arrow and countdown there, so go above that
+				var lift = slot === gvar("taggerID") ? 92 : 44;
+				tags.push({ html: (speaking ? '<b class="spk"></b>' + px(")") : "") + px(text, 1) + (ping ? '<b class="sig ' + pingLevel(ping) + '"><i></i><i></i><i></i></b>' : ""),
+					x: layer.layerToCanvas(p.x, p.y - lift, true), y: layer.layerToCanvas(p.x, p.y - lift, false) });
 			});
 		}
 		var rect = rt.canvas.getBoundingClientRect();
@@ -2831,11 +2997,13 @@
 		level: { label: "LEVEL", values: ["easy", "medium", "hard", "impossible"], shared: true },
 		limit: { label: "MAX", values: [2, 3, 4, 5, 6], shared: true },
 		flash: { label: "FLASH", values: [0, 1, 2, 3], shared: true, show: function (v) { return v ? "LEVEL " + v : "OFF"; } },
-		sons: { label: "", values: [0, 1], show: function (v) { return v ? "YES" : "NO"; } }
+		sons: { label: "", values: [0, 1], show: function (v) { return v ? "YES" : "NO"; } },
+		voice: { label: "VOICE", values: [0, 1], show: function (v) { return v ? "ON" : "OFF"; } }
 	};
 
 	// What a picker shows: your own settings, or the host's while you're their friend.
 	function shownValue(k) {
+		if (k === "voice") return voice.on ? 1 : 0;
 		if (net.role !== "guest") return settings[k];
 		if (k === "count") return net.shared.sons ? settings.count : 0;   // your own bots, if you're allowed any
 		return net.shared[k];
@@ -2859,6 +3027,7 @@
 		'<div class="bp-box bp-right">' +
 		'<div class="bp-title">' + px("ONLINE", 2) + "</div>" +
 		'<div class="bp-online"></div>' +
+		selector("voice") +
 		'<div class="bp-note">' + px("THY SONS CHANGE SETTINGS?") + "</div>" + selector("sons") +
 		"</div>";
 
@@ -2904,6 +3073,11 @@
 		"#touchPad button{border-radius:20px;cursor:pointer;opacity:.9;touch-action:none;" + FRAME + ",0 5px 0 2px #000}" +
 		"#touchPad .tp-jump{width:108px;height:108px;background:#0c81ed}" +
 		"#touchPad .tp-ok{width:76px;height:60px;background:rgba(0,0,0,.45)}" +
+		"#touchPad .tp-mic{width:76px;height:60px;background:#e4453a}" +
+		// a little pixel speaker for whoever's talking
+		".pingTag .spk{width:7px;height:8px;margin:0 9px 3px 0;background:#fff;box-shadow:0 0 0 2px #000;position:relative}" +
+		".pingTag .spk:after{content:'';position:absolute;left:5px;top:-5px;border:9px solid transparent;border-left:0;border-right:8px solid #fff;" +
+		"transform:scaleX(-1);transform-origin:0 50%;filter:drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000)}" +
 		"#touchPad button.down{transform:translateY(4px);box-shadow:0 0 0 2px #000,inset 0 0 0 2px #000}" +
 		// moonwalk cooldown bar under a player
 		".mwBar{position:fixed;z-index:5;width:30px;height:5px;transform:translate(-50%,0);pointer-events:none;" +
@@ -2938,7 +3112,7 @@
 			var val = sel.querySelector(".bp-val");
 			if (val.__v !== v) { val.innerHTML = px(v); val.__v = v; }
 			// in someone else's game everything is theirs to allow; the toggle itself is only theirs
-			var locked = net.role === "guest" && (k === "sons" || !net.shared.sons);
+			var locked = net.role === "guest" && k !== "voice" && (k === "sons" || !net.shared.sons);
 			sel.querySelectorAll("button").forEach(function (b) { b.disabled = locked; });
 		});
 	}
@@ -2975,10 +3149,11 @@
 
 		var html;
 		if (net.role === "host") {
-			html = '<div class="bp-row">' + px("CODE") + '<div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div></div>" +
+			html = '<div class="bp-row"><div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div>" +
+				'<button data-a="stop">' + px("STOP") + "</button></div>" +
 				note("FRIENDS: " + (net.guests.length ? net.guests.map(function (g) {
 					return (g.ping ? g.ping + "MS" : "JOINING") + (g.bots.length ? " & " + g.bots.length + " BOT" + (g.bots.length > 1 ? "S" : "") : "");
-				}).join(", ") : "NONE YET")) + '<button data-a="stop">' + px("STOP HOSTING") + "</button>";
+				}).join(", ") : "NONE YET"));
 		} else if (net.role === "guest") {
 			html = note((net.status || "Connected") + (net.ping ? " - " + net.ping + "MS" : "") +
 				(net.myBots.length ? " - YOUR BOTS RUN HERE" : "")) + '<button data-a="stop">' + px("LEAVE") + "</button>";
@@ -3012,6 +3187,7 @@
 		var k = b.parentNode.getAttribute("data-k"), list = SELECTORS[k].values;
 		var next = list[(list.indexOf(shownValue(k)) + +b.getAttribute("data-step") + list.length) % list.length];
 		b.blur();
+		if (k === "voice") return setVoice(next);
 		if (net.role === "guest" && SELECTORS[k].shared) {
 			// the host applies it (if they allow it) and it comes back in their next update
 			if (net.conn && net.conn.open) net.conn.send({ t: "set", k: k, v: next });
@@ -3075,10 +3251,12 @@
 		tap:     { label: "DOUBLE-TAP", values: [0.25, 0.35, 0.5], show: function (v) { return v === 0.25 ? "FAST" : v === 0.35 ? "NORMAL" : "SLOW"; } },
 		touch:   { label: "TOUCH PAD", values: ["auto", "on", "off"], show: function (v) { return v.toUpperCase(); } },
 		padSize: { label: "PAD SIZE", values: [0.8, 1, 1.25], show: function (v) { return v < 1 ? "SMALL" : v > 1 ? "BIG" : "NORMAL"; } },
-		padSide: { label: "STICK SIDE", values: [0, 1], show: function (v) { return v ? "RIGHT" : "LEFT"; } }
+		padSide: { label: "STICK SIDE", values: [0, 1], show: function (v) { return v ? "RIGHT" : "LEFT"; } },
+		voiceMode: { label: "TALK", values: ["ptt", "open"], show: function (v) { return v === "ptt" ? "HOLD V" : "OPEN MIC"; } },
+		voiceVol: { label: "VOICE VOLUME", values: [0, 25, 50, 75, 100], show: function (v) { return v ? String(v) : "OFF"; } }
 	};
 	var prefs = {};
-	var PREF_DEFAULTS = { volume: 100, tap: 0.35, padSize: 1 };   // the rest default to their first value
+	var PREF_DEFAULTS = { volume: 100, tap: 0.35, padSize: 1, voiceVol: 100 };   // the rest default to their first value
 	function defaultPrefs() {
 		Object.keys(PREFS).forEach(function (k) { prefs[k] = k in PREF_DEFAULTS ? PREF_DEFAULTS[k] : PREFS[k].values[0]; });
 	}
@@ -3091,6 +3269,9 @@
 	function applyPrefs() {
 		try { localStorage.setItem("tagPrefs", JSON.stringify(prefs)); } catch (e) {}
 		MW.TAP_GAP = prefs.tap;
+		Object.keys(voice.outs).forEach(function (p) { voice.outs[p].volume = prefs.voiceVol / 100; });
+		micGate();
+		showTouchMic();
 		if (fb.master) fb.master.gain.value = prefs.volume / 100;
 		if (fb.canvas) fb.canvas.style.opacity = prefs.gentle ? 0.55 : 1;
 		if (touch.el) {
@@ -3138,7 +3319,9 @@
 			"HOST GAME GIVES YOU A 5 LETTER CODE. FRIENDS TYPE IT IN AND PRESS JOIN.",
 			"EVERYONE'S PING SHOWS OVER THEIR PLAYER.",
 			"THY SONS CHANGE SETTINGS? YES LETS FRIENDS CHANGE SETTINGS, BRING THEIR OWN BOTS AND USE THE MENUS.",
-			{ keys: "FRIENDS JOIN A SLOT WITH THEIR OWN KEYS, LIKE AT HOME.", touch: "FRIENDS ON PHONES JOIN WITH THE STICK, LIKE AT HOME." }] },
+			{ keys: "VOICE: TURN IT ON IN THE ONLINE BOX, THEN HOLD [V] TO TALK. OPEN MIC IS IN SETTINGS.",
+				touch: "VOICE: TURN IT ON IN THE ONLINE BOX, THEN HOLD [MIC] TO TALK. OPEN MIC IS IN SETTINGS." },
+			"A SPEAKER SHOWS NEXT TO WHOEVER IS TALKING."] },
 		{ title: "SETTINGS", lines: [
 			"THE GEAR BUTTON HAS SOUND, FLASHING, SHAKE, POP-UPS, PING TAGS, THE INTRO, DOUBLE-TAP SPEED AND THE TOUCH PAD.",
 			"SETTINGS ARE KEPT ON THIS DEVICE.",
