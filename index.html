@@ -1661,11 +1661,11 @@
 			var caught = bySlot(tg);
 			if (level && caught && counts(caught)) flashbang("tag");
 			// where the two of them were just before the catch
-			dunkTag(last[watch.tagger], last[tg], level);
+			dunkTag(last[watch.tagger], last[tg]);
 			watch.lastTag = clock; watch.near = {}; watch.floor = null; watch.floorSince = clock;
 		}
 		watch.tagger = tg;
-		watchDunk(players, tagger, level);
+		watchDunk(players, tagger);
 		watch.last = {};
 		players.forEach(function (p) { watch.last[p.slot] = p; });
 		if (!level) return;
@@ -1974,10 +1974,9 @@
 			if (view[slot].start !== null && !(was && was.start !== null)) {
 				view[slot].shownAt = clock;
 				if (fb.audio && fb.heehee) playSound(fb.heehee, fb.audio.currentTime);
-				// Michael, for the moonwalker and the tagger they dodged (or everyone on level 3)
+				// Michael, for everyone
 				var p = instances(T_PLAYER).filter(function (i) { return i.instance_vars[2] === +slot; })[0];
-				var it = instances(T_PLAYER).filter(function (i) { return i.instance_vars[2] === gvar("taggerID"); })[0];
-				if (p && (flashLevel() >= 3 || isLocal(p.instance_vars[4]) || it && isLocal(it.instance_vars[4]))) showMJ(p.instance_vars[3]);
+				if (p) showMJ(p.instance_vars[3]);
 			} else if (was && view[slot].start !== null) {
 				view[slot].shownAt = was.shownAt;
 			}
@@ -2042,10 +2041,9 @@
 	}
 
 	// ---------- the MJ pop-up ----------
-	// When someone moonwalks, Michael himself shows up in your face for a second:
-	// for the moonwalker and for the tagger they just slipped, if either is playing on
-	// this device, and for everyone on flash level 3. He's mirrored to face the same
-	// way as the player.
+	// When anyone moonwalks, Michael himself shows up in your face for a second, on
+	// every flash level (the dunk and MJ setting turns him off). He's mirrored to face
+	// the same way as the player.
 
 	var mj = { clip: null, frames: [], canvas: null, ctx: null, show: null };
 
@@ -2103,9 +2101,8 @@
 	// ---------- the orange dunk ----------
 	// When the orange player drops on someone from above, the dunk clip fades in as
 	// they come down, timed so the dunk lands as the tag does, then gets out of the way
-	// fast. If the catch doesn't happen it just fades off. Shown to whoever's being
-	// dunked on (if they're playing on this device), or to everyone on flash level 3.
-	// It sits on top of any flashbang.
+	// fast. If the catch doesn't happen it just fades off. Shown to everyone, on every
+	// flash level (the dunk and MJ setting turns it off). It sits on top of any flashbang.
 
 	var ORANGE = 1;           // palette index
 	var dunk = { clip: null, frames: [], canvas: null, ctx: null, state: null };
@@ -2150,17 +2147,16 @@
 	}
 
 	// Each tick: is the orange tagger coming down on someone?
-	function watchDunk(players, tagger, level) {
+	function watchDunk(players, tagger) {
 		if (!dunk.clip) return;
 		var s = dunk.state;
-		function shows(p) { return level >= 3 || isLocal(p.input); }
 		var orange = tagger && paintOf(tagger.input, tagger.base) === ORANGE;
 
 		if (!s && orange && !tagger.floor && clock - watch.lastTag > 3.8) {
 			var prey = players.filter(function (p) {
 				return p !== tagger && p.y - tagger.y > 30 && p.y - tagger.y < 260 && Math.abs(p.x - tagger.x) < 110;
 			}).sort(function (a, b) { return Math.abs(a.x - tagger.x) - Math.abs(b.x - tagger.x); })[0];
-			if (prey && shows(prey)) {
+			if (prey) {
 				// time until they meet, from how fast the tagger's falling (game gravity 2000)
 				var gap = Math.max(0, prey.y - tagger.y - 33), v = tagger.dy;
 				var eta = (-v + Math.sqrt(v * v + 4000 * gap)) / 2000;
@@ -2174,11 +2170,11 @@
 	}
 
 	// On a tag: a dunk if orange came down on them from above.
-	function dunkTag(was, prey, level) {
+	function dunkTag(was, prey) {
 		if (!dunk.clip || !was || !prey) return;
 		var fromAbove = paintOf(was.input, was.base) === ORANGE && !was.floor && was.y < prey.y - 10;
 		var s = dunk.state;
-		if (fromAbove && (level >= 3 || isLocal(prey.input))) {
+		if (fromAbove) {
 			if (!s || s.phase === "leaving") startDunk(prey.slot, 0);
 			landDunk();
 		} else if (s && s.phase === "coming") {
