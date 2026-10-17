@@ -15,9 +15,14 @@
 		infection: { name: "INFECTION", start: infectStart, before: holdTimer, tick: infectTick, clock: function (m) { return m.time; },
 			chaser: function (m, slot) { return !!m.infected[slot]; }, blocksTag: function (m, slot) { return !!m.infected[slot]; },
 			view: function (m) { return { infected: Object.keys(m.infected).map(Number) }; }, show: infectShow,
-			tint: function (m, v, slot) { return (v.infected || []).indexOf(slot) >= 0 ? { colour: 3, amount: 0.45 } : null; } }
+			tint: function (m, v, slot) { return (v.infected || []).indexOf(slot) >= 0 ? { colour: 3, amount: 0.45 } : null; } },
+		freeze: { name: "FREEZE TAG", start: freezeStart, before: holdTimer, tick: freezeTick, clock: function (m) { return m.time; },
+			chaseable: function (m, slot) { return slot !== gvar("taggerID") && !m.frozen[slot]; },
+			blocksTag: freezeCatch, blocksInput: function (m, slot) { return !!m.frozen[slot]; }, rescue: freezeRescue,
+			view: function (m) { return { frozen: Object.keys(m.frozen).map(Number) }; },
+			tint: function (m, v, slot) { return (v.frozen || []).indexOf(slot) >= 0 ? { colour: 6, amount: 0.7 } : null; } }
 	};
-	var MODE_LIST = ["classic", "potato", "infection"];
+	var MODE_LIST = ["classic", "potato", "infection", "freeze"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -453,6 +458,14 @@
 			this.goal = best.land;
 		} else {
 			var t = seen.filter(function (p) { return p.slot === tagger; })[0];
+			var help = modeRescue(me, seen, t), hl = help && landingOf(help, false);
+			if (hl && timeTo(mine, hl.surf, hl.x) < Infinity) {
+				this.goal = hl;
+				this.edge = hl.surf !== me.surf ? mine.first[hl.surf.id] || null : null;
+				this.runup = false;
+				this.jumpDelay = -1;
+				return;
+			}
 			var tl = t && landingOf(t, cfg.predict);
 			if (!tl) { this.goal = null; return; }
 			if (!cfg.smartFlee) {
@@ -831,7 +844,7 @@
 		if (!rt || !rt.running_layout || !window.c2_callFunction || !rt.all_global_vars.length) return setTimeout(install, 200);
 		var call = window.c2_callFunction;
 		window.c2_callFunction = function (name, params) {
-			if (name === "Input" && params && moonInput(params[0], params[1])) return 0;
+			if (name === "Input" && params && (moonInput(params[0], params[1]) || modeBlocksInput(params[0], params[1]))) return 0;
 			return call(name, params);
 		};
 		var logic = rt.logic;
@@ -1156,7 +1169,7 @@
 	(function () {
 		var acts = cr.plugins_.Function.prototype.acts, call = acts.CallFunction;
 		acts.CallFunction = function (name, params) {
-			if (rt && params && String(name).toLowerCase() === "input" && (moonInput(params[0], params[1]) || colourPress(params[0], params[1]))) return;
+			if (rt && params && String(name).toLowerCase() === "input" && (moonInput(params[0], params[1]) || colourPress(params[0], params[1]) || modeBlocksInput(params[0], params[1]))) return;
 			if (rt && params && name === "Tag" && modeBlocksTag(params[0])) return;
 			return call.apply(this, arguments);
 		};
@@ -2838,6 +2851,21 @@
 		return net.role === "guest" ? mode.x || {} : d.view ? d.view(mode) : {};
 	}
 
+	// A player's moves, ignored while a mode holds them still (joining and menus still work).
+	function modeBlocksInput(id, what) {
+		var d = mode && MODES[mode.id];
+		if (!d || !d.blocksInput || net.role === "guest" || gvar("gameState") !== "Game") return false;
+		if (what !== "left" && what !== "right" && what !== "up" && what !== "down") return false;
+		var p = playerById(id);
+		return !!(p && d.blocksInput(mode, p.instance_vars[2]));
+	}
+
+	// A teammate a runner bot should go and help (Freeze Tag), or null.
+	function modeRescue(me, seen, threat) {
+		var d = mode && MODES[mode.id];
+		return d && d.rescue ? d.rescue(mode, me, seen, threat) : null;
+	}
+
 	// The game's own tagging, stopped when a mode says that catch doesn't count.
 	function modeBlocksTag(slot) {
 		var d = mode && MODES[mode.id];
@@ -2892,7 +2920,7 @@
 		mode.result = md.result;
 		mode.x = md.x;
 		(md.booms || []).forEach(function (b) {
-			if (b[0] > mode.seenBoom) { mode.seenBoom = b[0]; boomAt(b[1], b[2], false); }
+			if (b[0] > mode.seenBoom) { mode.seenBoom = b[0]; if (b[3]) starsAt(b[1], b[2], b[3]); else boomAt(b[1], b[2], false); }
 		});
 	}
 
@@ -2938,7 +2966,13 @@
 		}
 		if (fb.audio && fb.bang) playSound(fb.bang, fb.audio.currentTime);
 		shakeScreen(18, 0.45);
-		if (send) { mode.booms.push([++mode.boomSeq, Math.round(x), Math.round(y)]); mode.booms = mode.booms.slice(-4); }
+		if (send) sendFx(x, y, 0);
+	}
+
+	// Effects friends should see too: n stars, or 0 for a full explosion.
+	function sendFx(x, y, n) {
+		mode.booms.push([++mode.boomSeq, Math.round(x), Math.round(y), n]);
+		mode.booms = mode.booms.slice(-6);
 	}
 
 	var shakeUntil = 0, shakePower = 0;
@@ -3101,6 +3135,83 @@
 			a.visible = !!p;
 			if (p) { a.x = p.x; a.y = p.y; a.set_bbox_changed(); }
 		});
+	}
+
+	// ---- freeze tag ----
+	// Whoever's it stays it. Their catches freeze people where they stand (they can't
+	// move, but still fall), with an icy tint. A runner touching a frozen player frees
+	// them, and they can't be refrozen for a moment. Freeze everyone to win; the
+	// runners win if anyone's still free when the round timer runs out.
+
+	var THAW_SAFE = 1.5;   // seconds a freed player can't be refrozen
+
+	function freezeStart(m) {
+		m.frozen = {};
+		m.safe = {};
+		m.time = gvar("timer") || 200;
+	}
+
+	// The game's tagger touched someone: freeze them instead of passing it on.
+	function freezeCatch(m, slot) {
+		if (!m.frozen) return false;   // the game picking its first tagger, before we start
+		if (slot !== gvar("taggerID") && !m.frozen[slot] && !(m.safe[slot] > clock)) {
+			var p = instances(T_PLAYER).filter(function (i) { return i.instance_vars[2] === slot; })[0];
+			if (p) {
+				m.frozen[slot] = true;
+				p.behavior_insts[0].dx = 0;
+				starsAt(p.x, p.y, 6);
+			}
+		}
+		return true;
+	}
+
+	function freezeTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		var runners = players.filter(function (p) { return p.instance_vars[2] !== tg; });
+		var free = runners.filter(function (p) { return !m.frozen[p.instance_vars[2]]; });
+		if (!free.length) {
+			var it = players.filter(function (p) { return p.instance_vars[2] === tg; })[0];
+			return endMode((it ? colourName(it) : "THE TAGGER") + " FROZE EVERYONE", 1);
+		}
+		if (m.time <= 0) return endMode("THE RUNNERS WIN");
+
+		players.forEach(function (p) {
+			var slot = p.instance_vars[2];
+			if (m.frozen[slot]) {
+				p.behavior_insts[0].dx = 0;
+				// a free runner touching them thaws them out
+				var friend = free.filter(function (f) { return Math.abs(f.x - p.x) < 30 && Math.abs(f.y - p.y) < 30; })[0];
+				if (friend) {
+					delete m.frozen[slot];
+					m.safe[slot] = clock + THAW_SAFE;
+					starsAt(p.x, p.y, 4);
+				}
+			}
+		});
+	}
+
+	// Runner bots go and free a frozen teammate when the tagger isn't close.
+	function freezeRescue(m, me, seen, threat) {
+		var best = null, bestD = Infinity;
+		seen.forEach(function (p) {
+			if (!m.frozen[p.instance_vars ? p.instance_vars[2] : p.slot]) return;
+			var d = Math.abs(p.x - me.x) + Math.abs(p.y - me.y);
+			var risk = threat ? Math.abs(threat.x - p.x) + Math.abs(threat.y - p.y) : Infinity;
+			if (risk > 220 && d < bestD) { bestD = d; best = p; }
+		});
+		return best;
+	}
+
+	// The game's tag stars, without the bang (sent to friends too, from the host).
+	function starsAt(x, y, n) {
+		var type = rt.types_by_index[T_STAR], layer = rt.getLayerByName("Players");
+		if (!type || !layer) return;
+		if (net.role !== "guest") sendFx(x, y, n);
+		for (var i = 0; i < n; i++) {
+			var s = rt.createInstance(type, layer, x + (Math.random() - 0.5) * 50, y + (Math.random() - 0.5) * 50);
+			if (s) rt.trigger(Object.getPrototypeOf(s.type.plugin).cnds.OnCreated, s);
+		}
 	}
 
 	// ---------- settings and the guide ----------
