@@ -123,4 +123,12 @@ The MEME POP-UPS setting turns them off.
   Pages at speedycoder1192.qzz.io/tag/.
 - **Cleaned up** — the original page's ads, trackers and referrer tricks are gone. It
   has its own title and icon.
+- **Play offline** — the PLAY OFFLINE button (top left of the main menu) saves the whole
+  game as one `tag.html`, about 2.8 MB, to open from your files with no internet.
+  - It's built in your browser from the live files: this page plus the original game's
+    engine, sprites and sounds, all packed in.
+  - Everything works except online play and voice chat, which need the website (the
+    online box says so).
+  - The original host only has the game's own sounds as .ogg, which Safari can't play,
+    so those few sounds are silent in Safari (on the website too).
 - The game's engine, sprites and levels still load from the original game's host.

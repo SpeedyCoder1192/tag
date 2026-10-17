@@ -575,8 +575,8 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	<script>
 	// Issue a warning if trying to preview an exported project on disk.
 	(function(){
-		// Check for running exported on file protocol
-		if (window.location.protocol.substr(0, 4) ==="file")
+		// Check for running exported on file protocol (the saved offline copy brings its own files)
+		if (window.location.protocol.substr(0, 4) ==="file" && !window.TAG_OFFLINE)
 		{
 			alert("Exported games won't work until you upload them. (When running on the file:/// protocol, browsers block many features from working for security reasons.)");
 		}
@@ -3135,6 +3135,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 
 	var panel = document.createElement("div");
 	panel.id = "botPanel";
+	if (window.TAG_OFFLINE) panel.className = "offline";
 	panel.innerHTML =
 		'<div class="bp-box bp-left">' +
 		'<div class="bp-title">' + px("CPU PLAYERS", 2) + "</div>" +
@@ -3156,6 +3157,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		"#botPanel{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;z-index:10;display:none;" +
 		"pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
 		// the free columns either side of the menu text, below the slots and above the notification line
+		"#botPanel.offline .bp-right>.bp-sel,#botPanel.offline .bp-right>.bp-note{display:none}" +
 		"#botPanel .bp-box{position:absolute;top:282px;width:268px;box-sizing:border-box;padding:10px 12px 8px;pointer-events:auto;" +
 		"background:rgba(0,0,0,.59);border-radius:12px;" + FRAME + ",0 5px 0 2px #000}" +
 		"#botPanel .bp-left{left:10px}#botPanel .bp-right{left:746px}" +
@@ -3262,7 +3264,10 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 			t ? px("SUGGESTED: " + t.suggest) + ' <button data-a="retest">' + px("RE-TEST") + "</button>" : "");
 
 		var html;
-		if (net.role === "host") {
+		if (window.TAG_OFFLINE) {
+			html = note("THIS IS THE OFFLINE COPY. ONLINE PLAY AND VOICE CHAT NEED THE WEBSITE:") +
+				note("SPEEDYCODER1192.QZZ.IO/TAG");
+		} else if (net.role === "host") {
 			html = '<div class="bp-row"><div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div>" +
 				'<button data-a="stop">' + px("STOP") + "</button></div>" +
 				note("FRIENDS: " + (net.guests.length ? net.guests.map(function (g) {
@@ -3488,6 +3493,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		{ title: "SETTINGS", lines: [
 			"THE GEAR BUTTON HAS SOUND, FLASHING, SHAKE, POP-UPS, PING TAGS, THE INTRO, DOUBLE-TAP SPEED AND THE TOUCH PAD.",
 			"SETTINGS ARE KEPT ON THIS DEVICE.",
+			"PLAY OFFLINE (TOP LEFT) SAVES THE WHOLE GAME AS ONE FILE. OPEN IT ANY TIME, NO INTERNET NEEDED, JUST NOT ONLINE PLAY.",
 			"[?] OPENS THIS GUIDE AGAIN."] }
 	];
 
@@ -3548,9 +3554,126 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		el.style.transform = "translate(" + (r.left + (r.width - 1024 * s) / 2) + "px," + (r.top + (r.height - 576 * s) / 2) + "px) scale(" + s + ")";
 	}
 
+	// ---- play offline ----
+	// PLAY OFFLINE saves the whole game as one HTML file that runs with no internet:
+	// this page plus the original game's engine, sprites and sounds, packed in. It's
+	// built right here from the live files. In the saved copy, offlineShim runs first
+	// and hands the game its packed files whenever it asks for one by URL.
+
+	var OFFLINE_TYPES = { png: "image/png", ogg: "audio/ogg", m4a: "audio/mp4", js: "text/javascript" };
+	var packing = false;
+
+	function offlineShim(files) {
+		window.TAG_OFFLINE = true;
+		var made = {};
+		function local(url) {
+			if (typeof url !== "string" || /^(data|blob):/.test(url)) return url;
+			var name = url.split(/[?#]/)[0].split("/").pop(), f = files[name];
+			if (f === undefined) return url;
+			if (!made[name]) {
+				var bin = atob(f.slice(f.indexOf(",") + 1)), bytes = new Uint8Array(bin.length);
+				for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+				made[name] = URL.createObjectURL(new Blob([bytes], { type: f.slice(5, f.indexOf(";")) }));
+			}
+			return made[name];
+		}
+		var open = XMLHttpRequest.prototype.open;
+		XMLHttpRequest.prototype.open = function (method, url) {
+			var args = [].slice.call(arguments);
+			args[1] = local(url);
+			return open.apply(this, args);
+		};
+		var fetch0 = window.fetch;
+		if (fetch0) window.fetch = function (url, opts) { return fetch0.call(this, local(url), opts); };
+		[HTMLImageElement, HTMLMediaElement, HTMLScriptElement].forEach(function (T) {
+			var d = Object.getOwnPropertyDescriptor(T.prototype, "src");
+			Object.defineProperty(T.prototype, "src", { configurable: true, enumerable: true, get: d.get,
+				set: function (v) { d.set.call(this, local(v)); } });
+		});
+	}
+
+	function asDataUrl(buffer, type) {
+		return new Promise(function (done) {
+			var r = new FileReader();
+			r.onload = function () { done(r.result); };
+			r.readAsDataURL(new Blob([buffer], { type: type }));
+		});
+	}
+
+	function saveOffline() {
+		if (packing || window.TAG_OFFLINE) return;
+		packing = true;
+		var base = document.baseURI, page, files = {}, scripts = {}, names, done = 0;
+		function grab(name) {
+			var script = /\.js$/.test(name) && name !== "data.js";
+			return fetch(base + name).then(function (r) {
+				// the original host only has some sounds in both formats; the rest must be there
+				if (!r.ok && /\.(ogg|m4a)$/.test(name)) return null;
+				if (!r.ok) throw new Error(name + " " + r.status);
+				return script ? r.text() : r.arrayBuffer();
+			}).then(function (got) {
+				if (got === null) return;
+				if (script) return scripts[name] = got;
+				return asDataUrl(got, OFFLINE_TYPES[name.split(".").pop()]).then(function (url) { files[name] = url; });
+			}).then(function () {
+				showPacking(++done / names.length);
+			});
+		}
+		showPacking(0);
+		Promise.all([fetch(location.href.split("#")[0]).then(function (r) { return r.text(); }),
+			fetch(base + "data.js").then(function (r) { return r.text(); })]).then(function (got) {
+			page = got[0];
+			// every sprite and sound the game uses, in both sound formats where there are both
+			var found = {};
+			(got[1].match(/[\w-]+\.(png|ogg|m4a)/g) || []).forEach(function (n) {
+				found[n] = 1;
+				if (/\.(ogg|m4a)$/.test(n)) found[n.replace(/\.\w+$/, ".ogg")] = found[n.replace(/\.\w+$/, ".m4a")] = 1;
+			});
+			found["loading-logo.png"] = found["data.js"] = 1;
+			(page.match(/<script src="[^"]+"><\/script>/g) || []).forEach(function (tag) {
+				var src = tag.slice(13, -11);
+				if (src.indexOf(base) === 0) found[src.slice(base.length)] = 1;
+			});
+			names = Object.keys(found);
+			return Promise.all(names.map(grab));
+		}).then(function () {
+			var html = page.replace(/<base [^>]*>/, "")
+				// the engine's own scripts go straight in, so nothing loads from the web
+				.replace(/<script src="([^"]+)"><\/script>/g, function (tag, src) {
+					var code = src.indexOf(base) === 0 && scripts[src.slice(base.length)];
+					return code ? "<script>" + code.replace(/<\/script/gi, "<\\/script") + "<\/script>" : tag;
+				});
+			files["offlineClient.js"] = "data:text/javascript;base64,";
+			var shim = "<script>(" + offlineShim.toString() + ")(" + JSON.stringify(files) + ");<\/script>";
+			html = html.replace(/<head>/i, function (h) { return h + shim; });
+			var a = document.createElement("a");
+			a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+			a.download = "tag.html";
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			packing = false;
+			showPacking(null, "SAVED TAG.HTML");
+		}).catch(function (e) {
+			console.error("Couldn't save the offline copy:", e && e.message || e);
+			packing = false;
+			showPacking(null, "FAILED - TRY AGAIN");
+		});
+	}
+
+	function showPacking(part, message) {
+		var b = cornerButtons.querySelector("[data-offline]");
+		b.innerHTML = offlineLabel(message || (part === null ? "PLAY OFFLINE" : "SAVING " + Math.round(part * 100) + "%"));
+		if (message) setTimeout(function () { if (!packing) b.innerHTML = offlineLabel("PLAY OFFLINE"); }, 3000);
+	}
+
+	// one span, so the button's flex layout keeps the spaces between words
+	function offlineLabel(text) { return "<span>" + px(text, 2) + "</span>"; }
+
 	var cornerButtons = document.createElement("div");
 	cornerButtons.id = "tagCorner";
-	cornerButtons.innerHTML = '<button data-open="settings" aria-label="Settings">' +
+	cornerButtons.innerHTML = '<button data-offline aria-label="Save the game to play offline">' + offlineLabel("PLAY OFFLINE") + "</button>" +
+		'<button data-open="settings" aria-label="Settings">' +
 		'<svg viewBox="0 0 16 16" width="34" height="34" shape-rendering="crispEdges"><path fill="#fff" stroke="#000" stroke-width="1" d="M7 1h2v2h1l1-1 2 2-1 1v1h2v2h-2v1l1 1-2 2-1-1h-1v2H7v-2H6l-1 1-2-2 1-1V9H2V7h2V6L3 5l2-2 1 1h1z"/><rect x="6" y="6" width="4" height="4" fill="#000"/></svg></button>' +
 		'<button data-open="guide" aria-label="How to play">' + px("?", 3) + "</button>";
 
@@ -3569,6 +3692,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		"background:rgba(255,255,255,.18);border-radius:12px;opacity:.6;" + FRAME + ",0 4px 0 2px #000}" +
 		"#tagCorner button:hover{opacity:1}" +
 		"#tagCorner button[data-open=guide]{left:830px}#tagCorner button[data-open=settings]{left:760px}" +
+		"#tagCorner button[data-offline]{left:8px;width:auto;padding:0 16px;font-size:30px}" +
 		"#tagModal .tm-box{position:absolute;left:112px;top:46px;width:800px;height:484px;box-sizing:border-box;padding:16px 20px;pointer-events:auto;" +
 		"display:flex;flex-direction:column;background:rgba(0,0,0,.82);border-radius:16px;" + FRAME + ",0 6px 0 2px #000}" +
 		"#tagModal .tm-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}" +
@@ -3593,6 +3717,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	cornerButtons.addEventListener("click", function (ev) {
 		var b = ev.target.closest("[data-open]");
 		if (b) { openModal(b.getAttribute("data-open")); b.blur(); }
+		if (ev.target.closest("[data-offline]")) { saveOffline(); ev.target.closest("button").blur(); }
 	});
 	modal.el.addEventListener("click", function (ev) {
 		var b = ev.target.closest("button");
@@ -3632,6 +3757,9 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		var inMenus = rt && gvar("gameState") !== "Game" && !document.getElementById("splash");
 		cornerButtons.style.display = inMenus ? "block" : "none";
 		if (inMenus) placeOver(cornerButtons);
+		// only on the main screen, and not in the saved copy
+		cornerButtons.querySelector("[data-offline]").style.display =
+			!window.TAG_OFFLINE && net.role === null && gvar("currMenu") === "Players" ? "flex" : "none";
 		if (modal.kind) placeOver(modal.el);
 		// first time here: open the guide
 		var seen = true;

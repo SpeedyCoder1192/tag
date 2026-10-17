@@ -23,6 +23,8 @@ The short version is below. [FEATURES.md](FEATURES.md) has the full list.
 - **Moonwalk** — while running, double-tap backwards: glide back for half a second and
   you can't be tagged. 4 second cooldown.
 - **Touch controls** — a joystick and buttons appear when you touch the screen.
+- **Play offline** — the button at the top left of the main menu saves the whole game
+  as one file that runs with no internet (everything but online play).
 - **Splash** — a replay of a real bot chase, a flashbang, and the caption.
 - **How to play** — the **?** button opens a guide to everything, with keyboard and
   touch versions of the controls. It opens by itself the first time.
@@ -59,7 +61,8 @@ and cut the splash replays (they need Chromium and Node).
 ## Notes
 
 - The game itself (engine, sprites, levels) still loads from the site the original was
-  hosted on (see `<base href>` in `page.html`). If that goes away, this stops working.
+  hosted on (see `<base href>` in `page.html`). If that goes away, this stops working,
+  but offline copies saved with PLAY OFFLINE keep working.
 - TAG is not my game, and the sounds and clips (flashbang sound, Deltarune's "Jarona",
   the Michael Jackson clip and gif, the dunk video, the Among Us kill animations and
   sound, the laughing cat) belong to their owners.
