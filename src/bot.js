@@ -6,6 +6,14 @@
 
 	var BOT_IDS = [9, 10, 11, 15, 16];
 	var MAX_PLAYERS = 6;   // the game has 4 built-in slots; players 5 and 6 are added on top
+
+	// Game modes (see "game modes" below). false hides the MODE row and every game is Classic.
+	var GAME_MODES = true;
+	var MODES = {
+		classic: { name: "CLASSIC" },
+		potato: { name: "HOT POTATO", start: potatoStart, before: holdTimer, tick: potatoTick, clock: function (m) { return m.fuse; } }
+	};
+	var MODE_LIST = ["classic", "potato"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -18,7 +26,7 @@
 		impossible: { react: 0, replan: 0.1, miss: 0,    hesitate: 0,    predict: true,  smartFlee: true,  juke: true, moonwalk: true, boost: 1.15 }
 	};
 
-	var settings = { count: 1, level: "medium", limit: 4, flash: 0, sons: 0 };
+	var settings = { count: 1, level: "medium", limit: 4, flash: 0, sons: 0, mode: "classic" };
 	try {
 		var saved = JSON.parse(localStorage.getItem("tagBots"));
 		if (saved && saved.count >= 0 && saved.count <= BOT_IDS.length && LEVELS[saved.level]) {
@@ -28,6 +36,7 @@
 			settings.limitPicked = !!saved.limitPicked;
 			settings.flash = saved.flash >= 0 && saved.flash <= 3 ? saved.flash : 0;
 			settings.sons = saved.sons ? 1 : 0;
+			if (MODES[saved.mode]) settings.mode = saved.mode;
 		}
 	} catch (e) {}
 
@@ -782,6 +791,7 @@
 		moonwalkBefore();
 		guestInputs();
 		touchInputs();
+		modeBefore();
 		if (gvar("gameState") !== "Game" || !instances(T_PLAYER).length) return;
 
 		var cfg = LEVELS[settings.level];
@@ -806,6 +816,7 @@
 		if (net.role !== "guest") moonwalkTick();
 		moonVisuals();
 		watchFlashbangs();
+		modeAfter();
 		if (net.role === "host") hostSend();
 		if (net.role === "guest") guestAfterLogic();
 	}
@@ -2112,7 +2123,7 @@
 	function round1(v) { return Math.round(v * 10) / 10; }
 
 	function sharedSettings() {
-		return { count: settings.count, level: settings.level, limit: settings.limit, flash: settings.flash, sons: settings.sons };
+		return { count: settings.count, level: settings.level, limit: settings.limit, flash: settings.flash, sons: settings.sons, mode: modeId() };
 	}
 
 	var lastLobby = 0;
@@ -2140,6 +2151,7 @@
 			var t29 = instances(29)[0];
 			msg = { t: "s", L: L, gs: gs, tg: gvar("taggerID"), tm: t29 ? t29.instance_vars[0] : 0, shared: sharedSettings(), paints: paints, voice: voice.roster,
 				mw: Object.keys(mw.view).map(function (slot) { var v = mw.view[slot]; return [+slot, v.start !== null ? 1 : 0, Math.round(v.cool * 10) / 10]; }),
+				md: modeView(),
 				p: instances(T_PLAYER).map(function (i) {
 					var plat = i.behavior_insts[0];
 					return [i.instance_vars[2], i.instance_vars[4], i.instance_vars[5], round1(i.x), round1(i.y),
@@ -2310,6 +2322,7 @@
 	function guestAfterLogic() {
 		var host = net.host;
 		if (host && host.t === "s" && host.L === rt.running_layout.name) setText(instances(29)[0], String(host.tm));
+		if (host && host.t === "s" && host.L === rt.running_layout.name) modeGuest(host.md);
 	}
 
 	// Menu entries: which one is highlighted, and the text of left/right options.
@@ -2461,6 +2474,7 @@
 		level: { label: "LEVEL", values: ["easy", "medium", "hard", "impossible"], shared: true },
 		limit: { label: "MAX", values: [2, 3, 4, 5, 6], shared: true },
 		flash: { label: "FLASH", values: [0, 1, 2, 3], shared: true, show: function (v) { return v ? "LEVEL " + v : "OFF"; } },
+		mode: { label: "MODE", values: MODE_LIST, shared: true, show: function (v) { return MODES[v] ? MODES[v].name : "CLASSIC"; } },
 		sons: { label: "", values: [0, 1], show: function (v) { return v ? "YES" : "NO"; } },
 		voice: { label: "VOICE", values: [0, 1], show: function (v) { return v ? "ON" : "OFF"; } }
 	};
@@ -2485,7 +2499,7 @@
 	panel.innerHTML =
 		'<div class="bp-box bp-left">' +
 		'<div class="bp-title">' + px("CPU PLAYERS", 2) + "</div>" +
-		selector("count") + selector("level") + selector("limit") + selector("flash") +
+		(GAME_MODES ? selector("mode") : "") + selector("count") + selector("level") + selector("limit") + selector("flash") +
 		'<div class="bp-note bp-test"></div>' +
 		"</div>" +
 		'<div class="bp-box bp-right">' +
@@ -2748,6 +2762,165 @@
 			if (label.__text !== text) { label.innerHTML = px(text, 2); label.__text = text; }
 			label.style.opacity = e ? 1 : 0.4;
 		});
+	}
+
+	// ---------- game modes ----------
+	// MODE in the CPU PLAYERS box picks how a game plays; Classic is the game as it
+	// came. The list and the on/off switch are at the top of this file. A running mode
+	// keeps its state in `mode`. The host (or a game on one device) runs it, and
+	// friends get what they need to draw it in the host's updates.
+
+	var mode = null;
+	var T_STAR = 30;
+
+	function modeId() {
+		if (!GAME_MODES) return "classic";
+		var id = net.role === "guest" ? net.shared.mode : settings.mode;
+		return MODES[id] ? id : "classic";
+	}
+
+	// A level just started: set up whatever the mode needs.
+	function startMode() {
+		var id = modeId();
+		mode = { id: id, layout: rt.running_layout, result: "", booms: [], boomSeq: 0, seenBoom: 0 };
+		if (MODES[id].start && net.role !== "guest") MODES[id].start(mode);
+	}
+
+	function inLevel() { return rt.running_layout && rt.running_layout.name !== "Menu"; }
+
+	function modeBefore() {
+		if (mode && mode.layout === rt.running_layout && gvar("gameState") === "Game" && MODES[mode.id].before) MODES[mode.id].before(mode);
+	}
+
+	function modeAfter() {
+		if (!inLevel()) { mode = null; return; }
+		if (!mode || mode.layout !== rt.running_layout) {
+			if (gvar("gameState") !== "Game") return;
+			startMode();
+		}
+		var def = MODES[mode.id];
+		if (net.role !== "guest" && gvar("gameState") === "Game" && !mode.result) {
+			if (!finishMode() && !mode.ending && def.tick) def.tick(mode, rt.dt);
+			if (def.clock) showClock(def.clock(mode));
+		}
+		drawModeResult();
+	}
+
+	// What friends need to draw the mode.
+	function modeView() {
+		return mode ? { id: mode.id, result: mode.result, booms: mode.booms } : null;
+	}
+
+	function modeGuest(md) {
+		if (!md || !mode) return;
+		mode.result = md.result;
+		(md.booms || []).forEach(function (b) {
+			if (b[0] > mode.seenBoom) { mode.seenBoom = b[0]; boomAt(b[1], b[2], false); }
+		});
+	}
+
+	// Ends the game with a line under GAME OVER, after `wait` seconds (so a last
+	// explosion can finish before everything freezes).
+	function endMode(result, wait) {
+		mode.ending = { result: result, at: clock + (wait || 0) };
+	}
+
+	function finishMode() {
+		if (!mode.ending || clock < mode.ending.at) return false;
+		mode.result = mode.ending.result;
+		mode.ending = null;
+		window.c2_callFunction("Set_GameState", ["GameOver"]);
+		return true;
+	}
+
+	function colourName(p) {
+		var idx = paintOf(p.instance_vars[4], p.instance_vars[5]);
+		return palette ? palette.names[idx].toUpperCase() : String(p.instance_vars[5]).toUpperCase();
+	}
+
+	// The game's timer doesn't end modes that keep their own clock.
+	function holdTimer() {
+		var t29 = instances(29)[0];
+		if (t29) t29.instance_vars[0] = 999;
+	}
+
+	function showClock(seconds) {
+		var t29 = instances(29)[0];
+		if (!t29) return;
+		t29.instance_vars[0] = Math.max(0, Math.ceil(seconds));
+		setText(t29, String(t29.instance_vars[0]));
+	}
+
+	// A burst of the game's tag stars, the flashbang's bang and a shake. Friends see it too.
+	function boomAt(x, y, send) {
+		var type = rt.types_by_index[T_STAR], layer = rt.getLayerByName("Players");
+		if (type && layer) for (var i = 0; i < 14; i++) {
+			var a = Math.random() * Math.PI * 2, r = 10 + Math.random() * 60;
+			var s = rt.createInstance(type, layer, x + Math.cos(a) * r, y + Math.sin(a) * r);
+			if (s) rt.trigger(Object.getPrototypeOf(s.type.plugin).cnds.OnCreated, s);
+		}
+		if (fb.audio && fb.bang) playSound(fb.bang, fb.audio.currentTime);
+		shakeScreen(18, 0.45);
+		if (send) { mode.booms.push([++mode.boomSeq, Math.round(x), Math.round(y)]); mode.booms = mode.booms.slice(-4); }
+	}
+
+	var shakeUntil = 0, shakePower = 0;
+	function shakeScreen(power, time) {
+		if (!prefs.shake || !rt.canvas) return;
+		var start = !(shakeUntil > performance.now());
+		shakeUntil = performance.now() + time * 1000;
+		shakePower = power;
+		if (start) requestAnimationFrame(function step() {
+			var left = (shakeUntil - performance.now()) / (time * 1000);
+			if (left <= 0) { rt.canvas.style.transform = ""; return; }
+			var k = shakePower * left;
+			rt.canvas.style.transform = "translate(" + (Math.random() - 0.5) * k + "px," + (Math.random() - 0.5) * k + "px)";
+			requestAnimationFrame(step);
+		});
+	}
+
+	var modeResult = document.createElement("div");
+	modeResult.id = "modeResult";
+	function drawModeResult() {
+		var text = mode && gvar("gameState") === "GameOver" ? mode.result : "";
+		if (modeResult.__t !== text) { modeResult.__t = text; modeResult.innerHTML = text ? "<span>" + px(text, 3) + "</span>" : ""; }
+		modeResult.style.display = text ? "block" : "none";
+		if (text) placeOver(modeResult);
+	}
+
+	// ---- hot potato ----
+	// Each round the fuse is lit for 12 to 20 seconds and keeps burning while the
+	// potato gets passed around. Whoever holds it when it runs out blows up and is out,
+	// and someone random gets the next one. The first person tagged right at the end of
+	// a fuse still gets their 3-2-1 and a second to pass it on (only once per fuse, or
+	// two players tagging back and forth would keep it going forever). Last one
+	// standing wins.
+
+	var TAG_WAIT = 3.7;   // the game's 3-2-1 after a tag
+
+	function lightFuse(m) { m.fuse = 12 + Math.random() * 8; m.grace = true; m.tagger = gvar("taggerID"); }
+
+	function potatoStart(m) { lightFuse(m); }
+
+	function potatoTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		if (tg !== m.tagger) {
+			m.tagger = tg;
+			if (m.grace && m.fuse < TAG_WAIT + 1) { m.fuse = TAG_WAIT + 1; m.grace = false; }
+		}
+		m.fuse = Math.max(0, m.fuse - dt);
+		if (m.fuse > 0) return;
+
+		var it = players.filter(function (p) { return p.instance_vars[2] === tg; })[0];
+		if (it) {
+			boomAt(it.x, it.y, true);
+			if (isLocal(it.instance_vars[4])) flashbang("potato");
+			rt.DestroyInstance(it);
+		}
+		var left = players.filter(function (p) { return p !== it; });
+		if (left.length <= 1) return endMode(left.length ? colourName(left[0]) + " WINS" : "NOBODY WINS", 1.2);
+		window.c2_callFunction("Tag", [left[Math.floor(Math.random() * left.length)].instance_vars[2]]);
+		lightFuse(m);
 	}
 
 	// ---------- settings and the guide ----------
@@ -3030,8 +3203,9 @@
 
 	var modalStyle = document.createElement("style");
 	modalStyle.textContent =
-		"#tagCorner,#tagModal,#extraSlots{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
+		"#tagCorner,#tagModal,#extraSlots,#modeResult{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
 		"#extraSlots{z-index:9;display:none}" +
+		"#modeResult{z-index:12;display:none}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}" +
 		"#extraSlots .xs{position:absolute;top:" + (SLOT_Y - 45) + "px;width:152px;height:90px;display:flex;align-items:center;justify-content:center;image-rendering:pixelated}" +
 		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
 		// beside the game's own fullscreen and sound buttons, in their style
@@ -3122,6 +3296,7 @@
 	document.body.appendChild(panel);
 	document.body.appendChild(cornerButtons);
 	document.body.appendChild(extraSlots);
+	document.body.appendChild(modeResult);
 	document.body.appendChild(modal.el);
 	refreshButtons();
 	renderOnline();
