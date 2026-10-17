@@ -132,3 +132,25 @@ The MEME POP-UPS setting turns them off.
   - The original host only has the game's own sounds as .ogg, which Safari can't play,
     so those few sounds are silent in Safari (on the website too).
 - The game's engine, sprites and levels still load from the original game's host.
+
+## Planned: game modes
+
+Not built yet. They'll be built and approved one at a time. Once they're all
+approved, they ship switched off behind a feature flag (a variable in `src/bot.js`)
+until they're turned on.
+
+A MODE row in the menu picks one. Classic is the game as it is now.
+
+| Mode | How it plays | How you win |
+|---|---|---|
+| **Hot Potato** | Whoever is it has a fuse of about 10–15 seconds, reset by every tag. If it runs out, they explode (with a flashbang) and are out. | Last one standing |
+| **Infection** | Tagged players join the taggers instead of swapping. | Taggers: infect everyone. Runners: survive the timer. |
+| **Freeze Tag** | Tagged players freeze in place. A runner touching them unfreezes them. | Tagger: freeze everyone. Runners: survive the timer. |
+| **Juggernaut** | One tagger is bigger, faster and can triple jump. Everyone else runs. | Runners: survive the timer |
+| **King of the Hill** | One platform glows. Standing on it scores points, but only while you're not it. | Most points |
+| **Reverse Tag** | Everyone chases whoever has the arrow, and holding it scores points. Tagging them steals it. | Most points |
+| **Blackout** | The level is dark except for a small light around each player. Flashbangs light up the whole map for a moment. | Same as Classic |
+| **Teams** | 2v2 or 3v3. Each team takes a turn as the taggers. | Fastest team to tag everyone on the other side |
+| **Gun Game** | Every tag you make moves your colour one step down a set list. | First through the whole list |
+| **Sudden Death** | No timer. The game speeds up every 10 seconds until someone is tagged. That player is out, and it repeats. | Last one standing |
+| **Random** | Pressing START spins through the modes over a background that says **I LOVE GAMBLING** in the game's font, then lands on one. | Whatever it lands on |
