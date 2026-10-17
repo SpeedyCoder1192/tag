@@ -1,0 +1,37 @@
+# test server output and throwaway browser profiles
+site/
+tagprof-*
+*.jpg
+*.png
+node_modules/
+
+# the original game's own files, downloaded only for reference while building
+tagdl/
+assets/
+
+# raw recordings (rec/clips/ has the cut-down ones that ship)
+rec/*-hard.json
+rec/log-*.txt
+
+# intermediate media
+media/seq*/
+media/f2/
+media/frames/
+media/dunk/
+media/mj/
+media/*.mp4
+media/*.webm
+media/grenade-*.json
+media/transition.json
+media/icon.txt
+
+# one-off test scripts
+tools/*
+!tools/assemble.py
+!tools/build.sh
+!tools/cdp.mjs
+!tools/record.mjs
+!tools/pick.py
+!tools/clip.py
+!tools/palette.json
+!tools/smoke.mjs
