@@ -3022,10 +3022,13 @@
 		if (m.time <= 0) return endMode(runners.length === 1 ? colourName(runners[0]) + " SURVIVED" :
 			runners.length === 2 ? colourName(runners[0]) + " AND " + colourName(runners[1]) + " SURVIVED" : runners.length + " RUNNERS SURVIVED");
 
-		// the infected stagger about: a slow sway side to side, but never into a wall
+		// the infected stagger about: a slow sway side to side, but never into a wall,
+		// and they limp, dragging every other step
 		players.forEach(function (p) {
 			var slot = p.instance_vars[2];
 			if (!m.infected[slot]) return;
+			var plat = p.behavior_insts[0];
+			if (badStep(slot) && plat.dy === 0) plat.dx = Math.max(-LIMP_SPEED, Math.min(LIMP_SPEED, plat.dx));
 			var step = Math.sin(clock * 2.4 + slot * 1.7) * DRUNK_SWAY * dt;
 			p.x += step;
 			p.set_bbox_changed();
@@ -3043,15 +3046,43 @@
 	}
 
 	var DRUNK_SWAY = 48, DRUNK_TILT = 0.16;   // sideways stagger (px/s, about 20px each way) and lean (radians)
+	var LIMP_STEP = 34, LIMP_SPEED = 240;      // px walked per step, and top speed on the bad one
+
+	// How far into their walk each infected player is (in steps), counted from how
+	// far they've moved on the ground, so it looks the same on every device.
+	var limp = { steps: {}, lastX: {} };
+	function walkLimp(slot, inst) {
+		var moved = limp.lastX[slot] === undefined ? 0 : Math.abs(inst.x - limp.lastX[slot]);
+		limp.lastX[slot] = inst.x;
+		if (moved < 20) limp.steps[slot] = (limp.steps[slot] || 0) + moved / LIMP_STEP;
+	}
+
+	// The second half of every other step is the bad leg.
+	function badStep(slot) {
+		var s = (limp.steps[slot] || 0) % 2;
+		return s > 1 && s < 1.7;
+	}
 
 	// An arrow over everyone infected, copied from the game's own one over whoever's it,
 	// and a drunken lean that comes and goes.
 	var extraArrows = [];
 	function infectShow(m, v) {
+		var players = instances(T_PLAYER);
 		instances(T_VISUAL).forEach(function (vis) {
 			var slot = vis.instance_vars[0];
 			if ((v.infected || []).indexOf(slot) < 0) return;
+			var body = players.filter(function (p) { return p.instance_vars[2] === slot; })[0];
 			vis.angle += Math.sin(clock * 3.1 + slot * 2.3) * DRUNK_TILT;
+			if (body) {
+				walkLimp(slot, body);
+				var s = (limp.steps[slot] || 0) % 2, onFloor = body.behavior_insts[0].dy === 0 || net.role === "guest";
+				if (onFloor && s > 1) {
+					// the bad leg: sink and lurch forward, then come back up
+					var dip = Math.sin((s - 1) * Math.PI);
+					vis.y += 4 * dip;
+					vis.angle += 0.22 * dip * (body.instance_vars[3] || 1);
+				}
+			}
 			vis.set_bbox_changed();
 		});
 		var arrowType = rt.types_by_index[25], original = instances(25)[0];
