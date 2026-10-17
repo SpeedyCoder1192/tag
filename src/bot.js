@@ -11,9 +11,13 @@
 	var GAME_MODES = true;
 	var MODES = {
 		classic: { name: "CLASSIC" },
-		potato: { name: "HOT POTATO", start: potatoStart, before: holdTimer, tick: potatoTick, clock: function (m) { return m.fuse; } }
+		potato: { name: "HOT POTATO", start: potatoStart, before: holdTimer, tick: potatoTick, clock: function (m) { return m.fuse; } },
+		infection: { name: "INFECTION", start: infectStart, before: holdTimer, tick: infectTick, clock: function (m) { return m.time; },
+			chaser: function (m, slot) { return !!m.infected[slot]; }, blocksTag: function (m, slot) { return !!m.infected[slot]; },
+			view: function (m) { return { infected: Object.keys(m.infected).map(Number) }; }, show: infectShow,
+			tint: function (m, v, slot) { return (v.infected || []).indexOf(slot) >= 0 ? { colour: 3, amount: 0.45 } : null; } }
 	};
-	var MODE_LIST = ["classic", "potato"];
+	var MODE_LIST = ["classic", "potato", "infection"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -390,11 +394,12 @@
 	};
 
 	Bot.prototype.tick = function (me, all, cfg) {
-		var tagger = gvar("taggerID");
-		var isTagger = me.slot === tagger;
-		var vmax = this.vmax = (isTagger ? 450 : 400) * (cfg.boost || 1);
 		var seen = perceived(cfg.react);
-		var others = seen.filter(function (p) { return p.slot !== me.slot; });
+		// the chaser to run from (the nearest one, when a mode has several)
+		var tagger = threatFor(me, seen);
+		var isTagger = isChaser(me.slot);
+		var vmax = this.vmax = (me.slot === gvar("taggerID") ? 450 : 400) * (cfg.boost || 1);
+		var others = seen.filter(function (p) { return p.slot !== me.slot && (!isTagger || isChaseable(p.slot)); });
 		if (!others.length) return;
 
 		// easy/medium bots zone out now and then
@@ -1029,9 +1034,11 @@
 		if (watch.tagger !== null && tg !== watch.tagger) {
 			var caught = bySlot(tg);
 			if (level && caught && counts(caught)) flashbang("tag");
-			// where the two of them were just before the catch
-			dunkTag(last[watch.tagger], last[tg]);
-			killTag(last[watch.tagger], last[tg]);
+			// where the two of them were just before the catch (a mode may say who really caught them)
+			var by = mode && mode.by !== undefined && mode.by !== null ? mode.by : watch.tagger;
+			if (mode) mode.by = null;
+			dunkTag(last[by], last[tg]);
+			killTag(last[by], last[tg]);
 			watch.lastTag = clock; watch.near = {}; watch.floor = null; watch.floorSince = clock;
 		}
 		watch.tagger = tg;
@@ -1150,6 +1157,7 @@
 		var acts = cr.plugins_.Function.prototype.acts, call = acts.CallFunction;
 		acts.CallFunction = function (name, params) {
 			if (rt && params && String(name).toLowerCase() === "input" && (moonInput(params[0], params[1]) || colourPress(params[0], params[1]))) return;
+			if (rt && params && name === "Tag" && modeBlocksTag(params[0])) return;
 			return call.apply(this, arguments);
 		};
 	})();
@@ -1176,6 +1184,11 @@
 		if (!owner) return null;
 		var base = owner.instance_vars[5], idx = paintOf(owner.instance_vars[4], base);
 		if (idx === PALETTE_BASE[base]) return null;
+		return lookIn(inst, idx);
+	}
+
+	// A character's current frame in palette colour idx.
+	function lookIn(inst, idx) {
 		if (!redAnims) {
 			redAnims = {};
 			inst.type.animations.forEach(function (a) { if (a.name.indexOf("Red_") === 0) redAnims[a.name.slice(4)] = a; });
@@ -1213,11 +1226,22 @@
 					look = paletteLook(this);
 					drawTrail(this, glw, look ? look.tex : this.curWebGLTexture, look ? look.uv : this.curFrame.sheetTex);
 				} catch (e) {}
-				if (!look) return drawGL.call(this, glw);
 				var q = this.bquad;
-				glw.setTexture(look.tex);
-				glw.setOpacity(this.opacity);
-				glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, look.uv);
+				if (!look) drawGL.call(this, glw);
+				else {
+					glw.setTexture(look.tex);
+					glw.setOpacity(this.opacity);
+					glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, look.uv);
+				}
+				// a mode's colour wash on top (the infected go green)
+				try {
+					var tint = modeTint(this), over = tint && lookIn(this, tint.colour);
+					if (over) {
+						glw.setTexture(over.tex);
+						glw.setOpacity(this.opacity * tint.amount);
+						glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, over.uv);
+					}
+				} catch (e) {}
 				return;
 			}
 			if (palette && rt && this.type === rt.types_by_index[T_SLOTFILL]) {
@@ -2779,6 +2803,54 @@
 		return MODES[id] ? id : "classic";
 	}
 
+	// Who chases and who runs. Classic: the one who's it chases everyone else.
+	function isChaser(slot) {
+		var d = mode && MODES[mode.id];
+		return d && d.chaser ? d.chaser(mode, slot) : slot === gvar("taggerID");
+	}
+
+	function isChaseable(slot) {
+		var d = mode && MODES[mode.id];
+		return d && d.chaseable ? d.chaseable(mode, slot) : !isChaser(slot);
+	}
+
+	function threatFor(me, seen) {
+		var best = null, bestD = Infinity;
+		seen.forEach(function (p) {
+			if (p.slot === me.slot || !isChaser(p.slot)) return;
+			var d = Math.abs(p.x - me.x) + Math.abs(p.y - me.y);
+			if (d < bestD) { bestD = d; best = p.slot; }
+		});
+		return best === null ? gvar("taggerID") : best;
+	}
+
+	// A colour to wash over a player's sprite, if their mode gives them one.
+	function modeTint(inst) {
+		var d = mode && MODES[mode.id];
+		if (!d || !d.tint || !palette) return null;
+		var owner = (inst.siblings || []).filter(function (s) { return s.type === rt.types_by_index[T_PLAYER_ID]; })[0];
+		return owner ? d.tint(mode, modeShown(), owner.instance_vars[2]) : null;
+	}
+
+	// What a mode shows: the host's (or this device's) own state, or what a friend was sent.
+	function modeShown() {
+		var d = MODES[mode.id];
+		return net.role === "guest" ? mode.x || {} : d.view ? d.view(mode) : {};
+	}
+
+	// The game's own tagging, stopped when a mode says that catch doesn't count.
+	function modeBlocksTag(slot) {
+		var d = mode && MODES[mode.id];
+		return net.role !== "guest" && !!(d && d.blocksTag && d.blocksTag(mode, slot));
+	}
+
+	// Tag someone on the game's behalf (the stars, the 3-2-1, flashbangs and easter
+	// eggs all follow), crediting whoever really made the catch.
+	function tagFor(by, slot) {
+		if (mode) mode.by = by;
+		window.c2_callFunction("Tag", [slot]);
+	}
+
 	// A level just started: set up whatever the mode needs.
 	function startMode() {
 		var id = modeId();
@@ -2803,17 +2875,22 @@
 			if (!finishMode() && !mode.ending && def.tick) def.tick(mode, rt.dt);
 			if (def.clock) showClock(def.clock(mode));
 		}
+		if (def.show) def.show(mode, modeShown());
 		drawModeResult();
 	}
 
 	// What friends need to draw the mode.
 	function modeView() {
-		return mode ? { id: mode.id, result: mode.result, booms: mode.booms } : null;
+		if (!mode) return null;
+		var v = { id: mode.id, result: mode.result, booms: mode.booms }, def = MODES[mode.id];
+		if (def.view) v.x = def.view(mode);
+		return v;
 	}
 
 	function modeGuest(md) {
 		if (!md || !mode) return;
 		mode.result = md.result;
+		mode.x = md.x;
 		(md.booms || []).forEach(function (b) {
 			if (b[0] > mode.seenBoom) { mode.seenBoom = b[0]; boomAt(b[1], b[2], false); }
 		});
@@ -2921,6 +2998,78 @@
 		if (left.length <= 1) return endMode(left.length ? colourName(left[0]) + " WINS" : "NOBODY WINS", 1.2);
 		window.c2_callFunction("Tag", [left[Math.floor(Math.random() * left.length)].instance_vars[2]]);
 		lightFuse(m);
+	}
+
+	// ---- infection ----
+	// Whoever gets caught joins the taggers instead of swapping places, and gets an
+	// arrow of their own. Everyone infected can catch people (not just the newest),
+	// all waiting out the same 3-2-1 after each catch. Infect everyone to win; the
+	// runners win if anyone's left when the round timer runs out.
+
+	function infectStart(m) {
+		m.infected = {};
+		m.time = gvar("timer") || 200;
+	}
+
+	function infectTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		m.infected[tg] = true;
+		players = players.filter(function (p) { return p.instance_vars[2] !== undefined; });
+		var runners = players.filter(function (p) { return !m.infected[p.instance_vars[2]]; });
+
+		if (!runners.length) return endMode("THE INFECTED WIN", 1);
+		if (m.time <= 0) return endMode(runners.length === 1 ? colourName(runners[0]) + " SURVIVED" :
+			runners.length === 2 ? colourName(runners[0]) + " AND " + colourName(runners[1]) + " SURVIVED" : runners.length + " RUNNERS SURVIVED");
+
+		// the infected stagger about: a slow sway side to side, but never into a wall
+		players.forEach(function (p) {
+			var slot = p.instance_vars[2];
+			if (!m.infected[slot]) return;
+			var step = Math.sin(clock * 2.4 + slot * 1.7) * DRUNK_SWAY * dt;
+			p.x += step;
+			p.set_bbox_changed();
+			if (rt.testOverlapSolid(p)) { p.x -= step; p.set_bbox_changed(); }
+		});
+
+		// the game handles the newest one's catches; the rest are ours
+		if (gvar("timeOut") !== 0) return;
+		players.forEach(function (p) {
+			var slot = p.instance_vars[2];
+			if (!m.infected[slot] || slot === tg || gvar("timeOut") !== 0) return;
+			var prey = runners.filter(function (r) { return Math.abs(r.x - p.x) < 30 && Math.abs(r.y - p.y) < 30; })[0];
+			if (prey) { m.infected[prey.instance_vars[2]] = true; tagFor(slot, prey.instance_vars[2]); }
+		});
+	}
+
+	var DRUNK_SWAY = 48, DRUNK_TILT = 0.16;   // sideways stagger (px/s, about 20px each way) and lean (radians)
+
+	// An arrow over everyone infected, copied from the game's own one over whoever's it,
+	// and a drunken lean that comes and goes.
+	var extraArrows = [];
+	function infectShow(m, v) {
+		instances(T_VISUAL).forEach(function (vis) {
+			var slot = vis.instance_vars[0];
+			if ((v.infected || []).indexOf(slot) < 0) return;
+			vis.angle += Math.sin(clock * 3.1 + slot * 2.3) * DRUNK_TILT;
+			vis.set_bbox_changed();
+		});
+		var arrowType = rt.types_by_index[25], original = instances(25)[0];
+		if (!arrowType || !original) return;
+		var tg = gvar("taggerID"), want = instances(T_PLAYER).filter(function (p) {
+			return (v.infected || []).indexOf(p.instance_vars[2]) >= 0 && p.instance_vars[2] !== tg;
+		});
+		extraArrows = extraArrows.filter(function (a) { return arrowType.instances.indexOf(a) >= 0; });
+		while (extraArrows.length < want.length) {
+			var a = rt.createInstance(arrowType, original.layer, original.x, original.y);
+			if (!a) break;
+			extraArrows.push(a);
+		}
+		extraArrows.forEach(function (a, i) {
+			var p = want[i];
+			a.visible = !!p;
+			if (p) { a.x = p.x; a.y = p.y; a.set_bbox_changed(); }
+		});
 	}
 
 	// ---------- settings and the guide ----------
