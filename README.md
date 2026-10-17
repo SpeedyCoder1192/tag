@@ -25,9 +25,9 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 - **How to play** — the **?** button opens a guide to everything, with keyboard and
   touch versions of the controls. It opens by itself the first time.
 - **Settings** — the gear button: intro, effects volume, gentle flashing (dimmer white,
-  no flicker), screen shake, the dunk/MJ pop-ups, ping tags, double-tap speed, and the
+  no flicker), screen shake, the meme pop-ups, ping tags, double-tap speed, and the
   touch pad (auto/on/off, size, which side the stick is on). Kept per device.
-- **Easter egg** — be orange and land on someone from above.
+- **Easter eggs** — be orange and land on someone from above. Or be black and catch white.
 
 ## Controls
 
@@ -58,5 +58,6 @@ and cut the splash replays (they need Chromium and Node).
 - The game itself (engine, sprites, levels) still loads from the site the original was
   hosted on (see `<base href>` in `page.html`). If that goes away, this stops working.
 - TAG is not my game, and the sounds and clips (flashbang sound, Deltarune's "Jarona",
-  the Michael Jackson clip and gif, the dunk video) belong to their owners.
+  the Michael Jackson clip and gif, the dunk video, the Among Us kill animations and
+  sound) belong to their owners.
   The caption font is [Fredoka](https://fonts.google.com/specimen/Fredoka) (SIL Open Font License).

@@ -838,6 +838,7 @@
 		buildTouch();
 		setupDunk();
 		setupMJ();
+		setupKill();
 		applyPrefs();
 	}
 
@@ -876,6 +877,7 @@
 			fb.audio.decodeAudioData(base64Bytes(media.jarona).buffer, function (b) { fb.song = b; }, function () {});
 			fb.audio.decodeAudioData(base64Bytes(media.flashbang).buffer, function (b) { fb.bang = b; }, function () {});
 			if (media.heehee) fb.audio.decodeAudioData(base64Bytes(media.heehee).buffer, function (b) { fb.heehee = b; }, function () {});
+			if (media.scream) fb.audio.decodeAudioData(base64Bytes(media.scream).buffer, function (b) { fb.scream = b; }, function () {});
 		} catch (e) { fb.audio = null; }
 		// sound only works after a key press or click, so wake it on the first one
 		["keydown", "mousedown", "touchstart"].forEach(function (t) {
@@ -1017,6 +1019,7 @@
 			if (level && caught && counts(caught)) flashbang("tag");
 			// where the two of them were just before the catch
 			dunkTag(last[watch.tagger], last[tg]);
+			killTag(last[watch.tagger], last[tg]);
 			watch.lastTag = clock; watch.near = {}; watch.floor = null; watch.floorSince = clock;
 		}
 		watch.tagger = tg;
@@ -1397,7 +1400,7 @@
 
 	// ---------- the MJ pop-up ----------
 	// When anyone moonwalks, Michael himself shows up in your face for a second, on
-	// every flash level (the dunk and MJ setting turns him off). He's mirrored to face
+	// every flash level (the pop-ups setting turns him off). He's mirrored to face
 	// the same way as the player.
 
 	var mj = { clip: null, frames: [], canvas: null, ctx: null, show: null };
@@ -1453,11 +1456,75 @@
 		requestAnimationFrame(drawMJ);
 	}
 
+	// ---------- the Among Us kill ----------
+	// When the black player tags the white one, a random Among Us kill plays in your
+	// face, for everyone, on every flash level (the pop-ups setting turns it off).
+	// Clip 4 brings its own scream, started so the loud part lands on the blast.
+
+	var BLACK = 15, WHITE = 13;   // palette indices
+	var SCREAM_CLIP = 3, SCREAM_AT = 0.3;
+	var kill = { clips: [], canvas: null, ctx: null, show: null };
+
+	function setupKill() {
+		var d = window.TAG_MEDIA && window.TAG_MEDIA.amogus;
+		if (!d) return;
+		kill.clips = d.map(function (c) {
+			var at = 0;
+			return { w: c.w, h: c.h, total: c.durs.reduce(function (a, b) { return a + b; }, 0),
+				ends: c.durs.map(function (x) { return at += x; }),
+				frames: c.frames.map(function (src) { var im = new Image(); im.src = src; return im; }) };
+		});
+		kill.canvas = document.createElement("canvas");
+		kill.canvas.style.cssText = "position:fixed;z-index:56;pointer-events:none;display:none;border-radius:14px;" +
+			"border:6px solid #fff;box-shadow:0 0 0 3px #000,inset 0 0 0 3px #000,0 8px 0 3px #000";
+		document.body.appendChild(kill.canvas);
+		kill.ctx = kill.canvas.getContext("2d");
+	}
+
+	function killTag(was, prey) {
+		if (!kill.clips.length || !prefs.popups || !was || !prey) return;
+		if (paintOf(was.input, was.base) !== BLACK || paintOf(prey.input, prey.base) !== WHITE) return;
+		var n = Math.floor(Math.random() * kill.clips.length), c = kill.clips[n], already = !!kill.show;
+		kill.show = { clip: c, start: performance.now() / 1000 };
+		kill.canvas.width = c.w;
+		kill.canvas.height = c.h;
+		kill.canvas.style.display = "block";
+		if (n === SCREAM_CLIP && fb.audio && fb.scream) playSound(fb.scream, fb.audio.currentTime + SCREAM_AT);
+		if (!already) requestAnimationFrame(drawKill);
+	}
+
+	function drawKill() {
+		var s = kill.show;
+		if (!s) return;
+		var c = s.clip, t = performance.now() / 1000 - s.start;
+		// in fast, the whole kill, a beat on the body, out quick
+		var hold = c.total + 0.3;
+		if (t > hold + 0.2) {
+			kill.show = null;
+			kill.canvas.style.display = "none";
+			return;
+		}
+		var a = t < 0.1 ? t / 0.1 : t > hold ? 1 - (t - hold) / 0.2 : 1;
+		var i = 0;
+		while (i < c.ends.length - 1 && t >= c.ends[i]) i++;
+		if (c.frames[i].complete) kill.ctx.drawImage(c.frames[i], 0, 0, c.w, c.h);
+		var r = rt.canvas.getBoundingClientRect(), sc = Math.min(r.width / 1024, r.height / 576);
+		var h = 576 * sc * 0.62, w = h * c.w / c.h;
+		if (w > r.width * 0.9) { w = r.width * 0.9; h = w * c.h / c.w; }
+		kill.canvas.style.width = w + "px";
+		kill.canvas.style.height = h + "px";
+		kill.canvas.style.left = r.left + r.width / 2 - w / 2 + "px";
+		kill.canvas.style.top = r.top + r.height / 2 - h / 2 + "px";
+		kill.canvas.style.transform = "scale(" + (1 + 0.1 * Math.max(0, 1 - t / 0.2)) + ")";
+		kill.canvas.style.opacity = a;
+		requestAnimationFrame(drawKill);
+	}
+
 	// ---------- the orange dunk ----------
 	// When the orange player drops on someone from above, the dunk clip fades in as
 	// they come down, timed so the dunk lands as the tag does, then gets out of the way
 	// fast. If the catch doesn't happen it just fades off. Shown to everyone, on every
-	// flash level (the dunk and MJ setting turns it off). It sits on top of any flashbang.
+	// flash level (the pop-ups setting turns it off). It sits on top of any flashbang.
 
 	var ORANGE = 1;           // palette index
 	var dunk = { clip: null, frames: [], canvas: null, ctx: null, state: null };
@@ -2664,7 +2731,7 @@
 		volume:  { label: "EFFECTS VOLUME", values: [0, 25, 50, 75, 100], show: function (v) { return v ? String(v) : "OFF"; } },
 		gentle:  { label: "FLASHING", values: [0, 1], show: function (v) { return v ? "GENTLE" : "FULL"; } },
 		shake:   { label: "SCREEN SHAKE", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
-		popups:  { label: "DUNK AND MJ", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
+		popups:  { label: "MEME POP-UPS", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
 		tags:    { label: "PING TAGS", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
 		tap:     { label: "DOUBLE-TAP", values: [0.25, 0.35, 0.5], show: function (v) { return v === 0.25 ? "FAST" : v === 0.35 ? "NORMAL" : "SLOW"; } },
 		touch:   { label: "TOUCH PAD", values: ["auto", "on", "off"], show: function (v) { return v.toUpperCase(); } },
