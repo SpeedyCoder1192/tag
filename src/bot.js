@@ -2793,7 +2793,7 @@
 	}
 
 	function modeAfter() {
-		if (!inLevel()) { mode = null; return; }
+		if (!inLevel()) { mode = null; drawModeResult(); return; }
 		if (!mode || mode.layout !== rt.running_layout) {
 			if (gvar("gameState") !== "Game") return;
 			startMode();
