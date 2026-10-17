@@ -18,6 +18,11 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
   you can't be tagged. 4 second cooldown.
 - **Touch controls** — a joystick and buttons appear when you touch the screen.
 - **Splash** — a replay of a real bot chase, a flashbang, and the caption.
+- **How to play** — the **?** button opens a guide to everything, with keyboard and
+  touch versions of the controls. It opens by itself the first time.
+- **Settings** — the gear button: intro, effects volume, gentle flashing (dimmer white,
+  no flicker), screen shake, the dunk/MJ pop-ups, ping tags, double-tap speed, and the
+  touch pad (auto/on/off, size, which side the stick is on). Kept per device.
 - **Easter egg** — be orange and land on someone from above.
 
 ## Controls

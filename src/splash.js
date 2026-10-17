@@ -9,6 +9,12 @@
 (function () {
 	"use strict";
 
+	// the player's settings (see the gear button): skip the intro, volume, flashing, shake
+	var prefs = {};
+	try { prefs = JSON.parse(localStorage.getItem("tagPrefs")) || {}; } catch (e) {}
+	if (prefs.intro === 0) return;
+	var VOLUME = prefs.volume === undefined ? 1 : prefs.volume / 100, GENTLE = !!prefs.gentle, SHAKE = prefs.shake !== 0;
+
 	var W = 1024, H = 576;                        // the game's own resolution
 	var REPLAYS = __REPLAYS__;                    // recorded at build time, see tools/record.mjs
 	var REPLAY = REPLAYS[Math.floor(Math.random() * REPLAYS.length)];
@@ -153,6 +159,7 @@
 		voice = audio.createBufferSource();
 		voice.buffer = sound;
 		gain = audio.createGain();
+		gain.gain.value = VOLUME;
 		voice.connect(gain).connect(audio.destination);
 		voice.start(audio.currentTime + Math.max(0, T_FLASH - BANG_AT));
 	}
@@ -330,7 +337,7 @@
 	// Anime-style impact frames: the real frame crushed to stark black-and-white ink,
 	// flipping to its negative, with rough speed streaks and cracks off the hit.
 	function impactFrame(t, s, punch, sx, sy) {
-		var n = Math.min(IMPACT.length - 1, Math.floor((t - T_IMPACT) / IMPACT_LEN)), kind = IMPACT[n];
+		var n = Math.min(IMPACT.length - 1, Math.floor((t - T_IMPACT) / IMPACT_LEN)), kind = GENTLE ? "ink" : IMPACT[n];   // gentle: no flicker
 		var kick = 1 + n * 0.04;   // each frame lurches a little closer
 
 		raw.width = buf.width; raw.height = buf.height;
@@ -396,6 +403,7 @@
 		makeDust(s.players, Math.max(0, ct - clipTime(t - dt)));
 		if (t >= T_IMPACT && t - dt < T_IMPACT) shake = 26;
 		shake *= Math.exp(-dt * (t < T_FLASH ? 3 : 7));
+		if (!SHAKE) shake = 0;
 		var sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
 		var punch = punchIn(t, s);
 
@@ -424,7 +432,7 @@
 		caption(bctx, t);
 		bctx.setTransform(1, 0, 0, 1, 0, 0);
 
-		var k = whiteness(t);
+		var k = whiteness(t) * (GENTLE ? 0.6 : 1);
 		if (k > 0) {
 			bctx.globalAlpha = k;
 			bctx.fillStyle = "#fff";

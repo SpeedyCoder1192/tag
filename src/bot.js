@@ -829,6 +829,7 @@
 		buildTouch();
 		setupDunk();
 		setupMJ();
+		applyPrefs();
 	}
 
 	// ---------- flashbangs ----------
@@ -861,6 +862,8 @@
 		if (!media || !media.transition) return;
 		try {
 			fb.audio = new (window.AudioContext || window.webkitAudioContext)();
+			fb.master = fb.audio.createGain();
+			fb.master.connect(fb.audio.destination);
 			fb.audio.decodeAudioData(base64Bytes(media.jarona).buffer, function (b) { fb.song = b; }, function () {});
 			fb.audio.decodeAudioData(base64Bytes(media.flashbang).buffer, function (b) { fb.bang = b; }, function () {});
 			if (media.heehee) fb.audio.decodeAudioData(base64Bytes(media.heehee).buffer, function (b) { fb.heehee = b; }, function () {});
@@ -890,7 +893,7 @@
 		if (!fb.audio || !buffer) return;
 		var src = fb.audio.createBufferSource();
 		src.buffer = buffer;
-		src.connect(fb.audio.destination);
+		src.connect(fb.master || fb.audio.destination);
 		src.start(Math.max(fb.audio.currentTime, at));
 	}
 
@@ -1407,7 +1410,7 @@
 	}
 
 	function showMJ(facing) {
-		if (!mj.clip) return;
+		if (!mj.clip || !prefs.popups) return;
 		var already = !!mj.show;
 		mj.show = { start: performance.now() / 1000, flip: facing === -1 };
 		mj.canvas.style.display = "block";
@@ -1469,6 +1472,7 @@
 
 	// The clip runs at 30 source frames a second; frame 54 is the dunk.
 	function startDunk(victimSlot, eta) {
+		if (!prefs.popups) return;
 		var c = dunk.clip;
 		dunk.state = { victim: victimSlot, start: clock, eta: clock + eta, phase: "coming",
 			at0: Math.max(c.first, c.dunk - eta * 30), t0: clock, alpha: 0, leaving: 0 };
@@ -1478,6 +1482,7 @@
 
 	function landDunk() {
 		var s = dunk.state;
+		if (!s) return;   // pop-ups are off
 		s.phase = "landed";
 		s.landed = clock;
 		// jump to the dunk if the drop was quicker than expected
@@ -1556,7 +1561,7 @@
 		var h = 576 * sc * 0.82, w = h * c.w / c.h;
 		// a punch when the dunk lands
 		var kick = s.phase === "landed" ? 1 + 0.12 * Math.max(0, 1 - (now - s.landed) / 0.25) : 1;
-		var shake = s.phase === "landed" ? (Math.random() - 0.5) * 16 * Math.max(0, 1 - (now - s.landed) / 0.4) : 0;
+		var shake = s.phase === "landed" && prefs.shake ? (Math.random() - 0.5) * 16 * Math.max(0, 1 - (now - s.landed) / 0.4) : 0;
 		dunk.canvas.style.width = w + "px";
 		dunk.canvas.style.height = h + "px";
 		dunk.canvas.style.left = r.left + r.width / 2 - w / 2 + shake + "px";
@@ -1591,7 +1596,8 @@
 			["left", "right", "down"].forEach(function (k) { if (touch.held[k]) window.c2_callFunction("Input", [TOUCH_ID, k]); });
 	}
 
-	function showTouch(on) {
+	function showTouch(on, fromSettings) {
+		if (!fromSettings && prefs.touch !== "auto") return;
 		if (!touch.el || touch.shown === on) return;
 		touch.shown = on;
 		touch.el.style.display = on ? "block" : "none";
@@ -2138,7 +2144,7 @@
 	function drawTags() {
 		var tags = [];
 		var layer = rt.getLayerByName("Players");
-		if (layer && rt.running_layout.name !== "Menu") {
+		if (layer && rt.running_layout.name !== "Menu" && prefs.tags) {
 			instances(T_PLAYER).forEach(function (p) {
 				var slot = p.instance_vars[2], ping = net.pings[p.instance_vars[4]];
 				var text = (slot >= 4 ? "P" + (slot + 1) : "") + (ping !== undefined ? (slot >= 4 ? " - " : "") + (ping ? ping + "ms" : "...") : "");
@@ -2401,10 +2407,248 @@
 		if (show) placePanel();
 		refreshButtons();
 		renderOnline();
+		updateCorner();
+	}
+
+	// ---------- settings and the guide ----------
+	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
+	// everything (with keyboard and touch versions of the controls), the gear opens
+	// settings for this device. The guide opens by itself the first time.
+
+	var PREFS = {
+		intro:   { label: "INTRO", values: [1, 0], show: function (v) { return v ? "ON" : "SKIP"; } },
+		volume:  { label: "EFFECTS VOLUME", values: [0, 25, 50, 75, 100], show: function (v) { return v ? String(v) : "OFF"; } },
+		gentle:  { label: "FLASHING", values: [0, 1], show: function (v) { return v ? "GENTLE" : "FULL"; } },
+		shake:   { label: "SCREEN SHAKE", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
+		popups:  { label: "DUNK AND MJ", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
+		tags:    { label: "PING TAGS", values: [1, 0], show: function (v) { return v ? "ON" : "OFF"; } },
+		tap:     { label: "DOUBLE-TAP", values: [0.25, 0.35, 0.5], show: function (v) { return v === 0.25 ? "FAST" : v === 0.35 ? "NORMAL" : "SLOW"; } },
+		touch:   { label: "TOUCH PAD", values: ["auto", "on", "off"], show: function (v) { return v.toUpperCase(); } },
+		padSize: { label: "PAD SIZE", values: [0.8, 1, 1.25], show: function (v) { return v < 1 ? "SMALL" : v > 1 ? "BIG" : "NORMAL"; } },
+		padSide: { label: "STICK SIDE", values: [0, 1], show: function (v) { return v ? "RIGHT" : "LEFT"; } }
+	};
+	var prefs = {};
+	var PREF_DEFAULTS = { volume: 100, tap: 0.35, padSize: 1 };   // the rest default to their first value
+	function defaultPrefs() {
+		Object.keys(PREFS).forEach(function (k) { prefs[k] = k in PREF_DEFAULTS ? PREF_DEFAULTS[k] : PREFS[k].values[0]; });
+	}
+	defaultPrefs();
+	try {
+		var savedPrefs = JSON.parse(localStorage.getItem("tagPrefs")) || {};
+		Object.keys(PREFS).forEach(function (k) { if (PREFS[k].values.indexOf(savedPrefs[k]) >= 0) prefs[k] = savedPrefs[k]; });
+	} catch (e) {}
+
+	function applyPrefs() {
+		try { localStorage.setItem("tagPrefs", JSON.stringify(prefs)); } catch (e) {}
+		MW.TAP_GAP = prefs.tap;
+		if (fb.master) fb.master.gain.value = prefs.volume / 100;
+		if (fb.canvas) fb.canvas.style.opacity = prefs.gentle ? 0.55 : 1;
+		if (touch.el) {
+			touch.el.style.setProperty("--pad", prefs.padSize);
+			touch.el.classList.toggle("lefty", !!prefs.padSide);
+			if (prefs.touch === "on") showTouch(true, true);
+			if (prefs.touch === "off") showTouch(false, true);
+		}
+	}
+
+	// ---- the guide ----
+	// [X] in a line becomes a key cap. A line can be {keys, touch} for the two control styles.
+	var GUIDE = [
+		{ title: "THE GAME", lines: [
+			"ONE PLAYER IS IT: THE ONE WITH THE ARROW OVER THEM.",
+			"IT TOUCHES SOMEONE TO PASS IT ON. AFTER A TAG THERE'S A 3-2-1 BEFORE THE NEW TAGGER CAN TAG.",
+			"DON'T BE IT WHEN THE TIMER RUNS OUT.",
+			"ORANGE JELLY MAKES YOU FAST, BLUE JELLY BOUNCES YOU HIGH, AND YOU CAN JUMP UP THROUGH PINK JELLY."] },
+		{ title: "MOVING", lines: [
+			{ keys: "PLAYER 1: [W] [A] [S] [D]    PLAYER 2: THE ARROW KEYS", touch: "THE STICK MOVES YOU." },
+			{ keys: "PLAYER 3: [T] [F] [G] [H]    PLAYER 4: [I] [J] [K] [L]", touch: "[JUMP] OR PUSHING THE STICK UP JUMPS." },
+			{ keys: "UP JUMPS. DOWN DROPS YOU THROUGH PINK JELLY.", touch: "PUSH THE STICK DOWN TO DROP THROUGH PINK JELLY." },
+			{ keys: "GAMEPADS WORK TOO: STICK TO MOVE, [A] JUMPS, [X] DROPS.", touch: "THE PAD SHOWS UP WHEN YOU TOUCH THE SCREEN, AND HIDES WHEN YOU USE A KEYBOARD." }] },
+		{ title: "JOINING", lines: [
+			{ keys: "ON THE PLAYER SCREEN, PRESS ANY OF YOUR KEYS TO JOIN.", touch: "ON THE PLAYER SCREEN, PUSH THE STICK TO JOIN." },
+			"THEN LEFT AND RIGHT PICK YOUR COLOUR. THERE ARE 16. DOWN LEAVES.",
+			{ keys: "[SPACE] OR [ENTER] STARTS ONCE 2 OR MORE ARE IN.", touch: "[OK] STARTS ONCE 2 OR MORE ARE IN." },
+			"IN THE MENU, UP AND DOWN PICK, LEFT AND RIGHT CHANGE MAP, TIMER AND OPTIONS."] },
+		{ title: "CPU PLAYERS", lines: [
+			"THE CPU PLAYERS BOX ON THE PLAYER SCREEN ADDS UP TO 5 BOTS.",
+			"LEVELS: EASY, MEDIUM, HARD AND IMPOSSIBLE. IMPOSSIBLE BOTS ARE FASTER THAN THE RULES ALLOW.",
+			"MAX IS HOW MANY CAN PLAY, UP TO 6. PLAYERS 5 AND 6 GET A LABEL OVER THEM.",
+			"THE DEVICE TEST SUGGESTS A MAX THAT WON'T LAG. RE-TEST TO RUN IT AGAIN."] },
+		{ title: "MOONWALK", lines: [
+			{ keys: "WHILE RUNNING, DOUBLE-TAP BACKWARDS. RUNNING RIGHT: HOLD [D], TAP [A] [A].", touch: "WHILE RUNNING, FLICK THE STICK BACKWARDS TWICE." },
+			"YOU GLIDE BACKWARDS, STILL FACING FORWARDS, AND CAN'T BE TAGGED FOR HALF A SECOND.",
+			"THEN IT RECHARGES FOR 4 SECONDS: WATCH THE BAR UNDER YOU.",
+			"ONLY RUNNERS CAN DO IT, NOT WHOEVER IS IT. HARD BOTS KNOW HOW TOO."] },
+		{ title: "FLASHBANGS", lines: [
+			"SET FLASH IN THE CPU PLAYERS BOX.",
+			"LEVEL 1: YOU GET FLASHBANGED WHEN YOU GET TAGGED.",
+			"LEVEL 2: ALSO WHEN YOU'RE IT AND GET JUKED, OR WHEN YOU CAMP ONE PLATFORM FOR 4 SECONDS.",
+			"LEVEL 3: ALL OF THAT FOR EVERYONE, PLUS EVERY DOUBLE JUMP. TOO MUCH? TRY GENTLE FLASHING IN SETTINGS."] },
+		{ title: "ONLINE", lines: [
+			"HOST GAME GIVES YOU A 5 LETTER CODE. FRIENDS TYPE IT IN AND PRESS JOIN.",
+			"EVERYONE'S PING SHOWS OVER THEIR PLAYER.",
+			"THY SONS CHANGE SETTINGS? YES LETS FRIENDS CHANGE SETTINGS, BRING THEIR OWN BOTS AND USE THE MENUS.",
+			{ keys: "FRIENDS JOIN A SLOT WITH THEIR OWN KEYS, LIKE AT HOME.", touch: "FRIENDS ON PHONES JOIN WITH THE STICK, LIKE AT HOME." }] },
+		{ title: "SETTINGS", lines: [
+			"THE GEAR BUTTON HAS SOUND, FLASHING, SHAKE, POP-UPS, PING TAGS, THE INTRO, DOUBLE-TAP SPEED AND THE TOUCH PAD.",
+			"SETTINGS ARE KEPT ON THIS DEVICE.",
+			"[?] OPENS THIS GUIDE AGAIN."] }
+	];
+
+	var modal = { el: null, kind: null, page: 0, mode: "keys" };
+
+	// Pixel text where [X] becomes a little key cap.
+	function guideText(line) {
+		return line.split(/(\[[^\]]+\])/).map(function (part) {
+			if (/^\[.+\]$/.test(part)) return '<span class="tm-key">' + px(part.slice(1, -1)) + "</span>";
+			return px(part.trim());
+		}).join(" ");
+	}
+
+	function renderModal() {
+		var box = modal.el.querySelector(".tm-box"), html;
+		if (modal.kind === "guide") {
+			var page = GUIDE[modal.page];
+			html = '<div class="tm-head">' + px(page.title, 2) +
+				'<span class="tm-tabs"><button data-mode="keys" class="' + (modal.mode === "keys" ? "on" : "") + '">' + px("KEYS") + "</button>" +
+				'<button data-mode="touch" class="' + (modal.mode === "touch" ? "on" : "") + '">' + px("TOUCH") + "</button></span>" +
+				'<button data-m="close">' + px("X") + "</button></div>" +
+				'<div class="tm-body">' + page.lines.map(function (l) {
+					return '<div class="tm-line">' + guideText(typeof l === "string" ? l : l[modal.mode]) + "</div>";
+				}).join("") + "</div>" +
+				'<div class="tm-foot"><button data-m="prev">' + px("<") + "</button>" +
+				px((modal.page + 1) + " / " + GUIDE.length) + '<button data-m="next">' + px(">") + "</button></div>";
+		} else {
+			html = '<div class="tm-head">' + px("SETTINGS", 2) + '<button data-m="close">' + px("X") + "</button></div>" +
+				'<div class="tm-body tm-prefs">' + Object.keys(PREFS).map(function (k) {
+					return '<div class="tm-pref" data-p="' + k + '"><span class="tm-lab">' + px(PREFS[k].label) + "</span>" +
+						'<button data-step="-1">' + px("<") + '</button><span class="tm-val">' + px(PREFS[k].show(prefs[k])) + "</span>" +
+						'<button data-step="1">' + px(">") + "</button></div>";
+				}).join("") + "</div>" +
+				'<div class="tm-foot"><button data-m="reset">' + px("RESET") + '</button><button data-m="close" class="go">' + px("DONE") + "</button></div>";
+		}
+		box.innerHTML = html;
+	}
+
+	function openModal(kind) {
+		modal.kind = kind;
+		if (kind === "guide") modal.mode = touch.shown ? "touch" : "keys";
+		renderModal();
+		modal.el.style.display = "block";
+		placeOver(modal.el);
+	}
+
+	function closeModal() { modal.el.style.display = "none"; modal.kind = null; }
+
+	function flipPage(step) {
+		modal.page = (modal.page + step + GUIDE.length) % GUIDE.length;
+		renderModal();
+	}
+
+	// Lay a 1024x576 layer over wherever the game is drawn.
+	function placeOver(el) {
+		if (!rt || !rt.canvas) return;
+		var r = rt.canvas.getBoundingClientRect(), s = Math.min(r.width / 1024, r.height / 576);
+		el.style.transform = "translate(" + (r.left + (r.width - 1024 * s) / 2) + "px," + (r.top + (r.height - 576 * s) / 2) + "px) scale(" + s + ")";
+	}
+
+	var cornerButtons = document.createElement("div");
+	cornerButtons.id = "tagCorner";
+	cornerButtons.innerHTML = '<button data-open="settings" aria-label="Settings">' +
+		'<svg viewBox="0 0 16 16" width="34" height="34" shape-rendering="crispEdges"><path fill="#fff" stroke="#000" stroke-width="1" d="M7 1h2v2h1l1-1 2 2-1 1v1h2v2h-2v1l1 1-2 2-1-1h-1v2H7v-2H6l-1 1-2-2 1-1V9H2V7h2V6L3 5l2-2 1 1h1z"/><rect x="6" y="6" width="4" height="4" fill="#000"/></svg></button>' +
+		'<button data-open="guide" aria-label="How to play">' + px("?", 3) + "</button>";
+
+	modal.el = document.createElement("div");
+	modal.el.id = "tagModal";
+	modal.el.innerHTML = '<div class="tm-box"></div>';
+
+	var modalStyle = document.createElement("style");
+	modalStyle.textContent =
+		"#tagCorner,#tagModal{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
+		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
+		// beside the game's own fullscreen and sound buttons, in their style
+		"#tagCorner button{position:absolute;top:8px;width:64px;height:64px;pointer-events:auto;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;" +
+		"background:rgba(255,255,255,.18);border-radius:12px;opacity:.6;" + FRAME + ",0 4px 0 2px #000}" +
+		"#tagCorner button:hover{opacity:1}" +
+		"#tagCorner button[data-open=guide]{left:830px}#tagCorner button[data-open=settings]{left:760px}" +
+		"#tagModal .tm-box{position:absolute;left:112px;top:46px;width:800px;height:484px;box-sizing:border-box;padding:16px 20px;pointer-events:auto;" +
+		"display:flex;flex-direction:column;background:rgba(0,0,0,.82);border-radius:16px;" + FRAME + ",0 6px 0 2px #000}" +
+		"#tagModal .tm-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}" +
+		"#tagModal .tm-head>button:last-child{margin-left:auto}" +
+		"#tagModal .tm-tabs{display:flex;gap:6px;margin-left:auto}" +
+		"#tagModal .tm-body{flex:1;overflow:auto}" +
+		"#tagModal .tm-line{margin:0 0 16px;line-height:22px}" +
+		"#tagModal .tm-key{display:inline-block;padding:3px 5px 1px;margin:0 1px;border-radius:5px;background:rgba(255,255,255,.18);box-shadow:0 0 0 2px #fff,0 0 0 4px #000}" +
+		"#tagModal .tm-prefs{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px;align-content:start}" +
+		"#tagModal .tm-pref{display:flex;align-items:center;gap:6px}" +
+		"#tagModal .tm-lab{width:150px;flex:none}#tagModal .tm-val{flex:1;text-align:center}" +
+		"#tagModal .tm-foot{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:10px}" +
+		"#tagModal button{background:rgba(0,0,0,.45);border-radius:8px;padding:5px 7px 3px;cursor:pointer;line-height:0;" + FRAME.replace("4px", "3px") + ",0 4px 0 2px #000}" +
+		"#tagModal button:hover{background:rgba(255,255,255,.2)}" +
+		"#tagModal button.on{background:#f4b923}#tagModal button.go{background:#0c81ed}" +
+		// touch pad size and side
+		"#touchPad .tp-stick{transform:scale(var(--pad,1));transform-origin:0 100%}" +
+		"#touchPad .tp-buttons{transform:scale(var(--pad,1));transform-origin:100% 100%}" +
+		"#touchPad.lefty .tp-stick{left:auto;right:calc(22px + env(safe-area-inset-right));transform-origin:100% 100%}" +
+		"#touchPad.lefty .tp-buttons{right:auto;left:calc(22px + env(safe-area-inset-left));flex-direction:row-reverse;transform-origin:0 100%}";
+
+	cornerButtons.addEventListener("click", function (ev) {
+		var b = ev.target.closest("[data-open]");
+		if (b) { openModal(b.getAttribute("data-open")); b.blur(); }
+	});
+	modal.el.addEventListener("click", function (ev) {
+		var b = ev.target.closest("button");
+		if (!b) return;
+		b.blur();
+		if (b.hasAttribute("data-mode")) { modal.mode = b.getAttribute("data-mode"); return renderModal(); }
+		var m = b.getAttribute("data-m");
+		if (m === "close") return closeModal();
+		if (m === "prev" || m === "next") return flipPage(m === "prev" ? -1 : 1);
+		if (m === "reset") { defaultPrefs(); applyPrefs(); return renderModal(); }
+		var row = b.closest("[data-p]");
+		if (row) {
+			var k = row.getAttribute("data-p"), list = PREFS[k].values;
+			prefs[k] = list[(list.indexOf(prefs[k]) + +b.getAttribute("data-step") + list.length) % list.length];
+			applyPrefs();
+			renderModal();
+		}
+	});
+	[cornerButtons, modal.el].forEach(function (el) {
+		["mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend"].forEach(function (t) {
+			el.addEventListener(t, function (ev) { ev.stopPropagation(); });
+		});
+	});
+	// while it's open, keys work the guide instead of the game
+	window.addEventListener("keydown", function (ev) {
+		if (!modal.kind) return;
+		ev.stopPropagation();
+		ev.preventDefault();
+		if (ev.key === "Escape" || ev.key === "Enter" || ev.key === " ") closeModal();
+		else if (modal.kind === "guide" && (ev.key === "ArrowRight" || ev.key === "d" || ev.key === "D")) flipPage(1);
+		else if (modal.kind === "guide" && (ev.key === "ArrowLeft" || ev.key === "a" || ev.key === "A")) flipPage(-1);
+	}, true);
+	window.addEventListener("keyup", function (ev) { if (modal.kind) ev.stopPropagation(); }, true);
+	window.addEventListener("resize", function () { placeOver(cornerButtons); if (modal.kind) placeOver(modal.el); });
+
+	function updateCorner() {
+		var inMenus = rt && gvar("gameState") !== "Game" && !document.getElementById("splash");
+		cornerButtons.style.display = inMenus ? "block" : "none";
+		if (inMenus) placeOver(cornerButtons);
+		if (modal.kind) placeOver(modal.el);
+		// first time here: open the guide
+		var seen = true;
+		try { seen = !!localStorage.getItem("tagGuideSeen"); } catch (e) {}
+		if (inMenus && !seen && !modal.kind && gvar("currMenu") === "Players") {
+			try { localStorage.setItem("tagGuideSeen", "1"); } catch (e) {}
+			openModal("guide");
+		}
 	}
 
 	document.head.appendChild(style);
+	document.head.appendChild(modalStyle);
 	document.body.appendChild(panel);
+	document.body.appendChild(cornerButtons);
+	document.body.appendChild(modal.el);
 	refreshButtons();
 	renderOnline();
 	/*TEST_EXPORTS*/
