@@ -5,6 +5,8 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 
 ## What's added
 
+The short version is below. [FEATURES.md](FEATURES.md) has the full list.
+
 - **CPU players** — 0–5 bots, Easy / Medium / Hard / Impossible. They path-find around
   each level using the game's own physics, chase, flee, juke and moonwalk.
 - **Up to 6 players** — the game has 4 slots; with a max of 5 or 6 the player screen
