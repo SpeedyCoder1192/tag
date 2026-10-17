@@ -28,7 +28,7 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
   no flicker), screen shake, the meme pop-ups, ping tags, double-tap speed, and the
   touch pad (auto/on/off, size, which side the stick is on). Kept per device.
 - **Easter eggs** — be orange and land on someone from above. Or catch someone in the right
-  colours for an Among Us kill.
+  colours for an Among Us kill, then get them back.
 
 ## Controls
 
@@ -60,5 +60,5 @@ and cut the splash replays (they need Chromium and Node).
   hosted on (see `<base href>` in `page.html`). If that goes away, this stops working.
 - TAG is not my game, and the sounds and clips (flashbang sound, Deltarune's "Jarona",
   the Michael Jackson clip and gif, the dunk video, the Among Us kill animations and
-  sound) belong to their owners.
+  sound, the laughing cat) belong to their owners.
   The caption font is [Fredoka](https://fonts.google.com/specimen/Fredoka) (SIL Open Font License).

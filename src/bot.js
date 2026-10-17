@@ -878,6 +878,7 @@
 			fb.audio.decodeAudioData(base64Bytes(media.flashbang).buffer, function (b) { fb.bang = b; }, function () {});
 			if (media.heehee) fb.audio.decodeAudioData(base64Bytes(media.heehee).buffer, function (b) { fb.heehee = b; }, function () {});
 			if (media.scream) fb.audio.decodeAudioData(base64Bytes(media.scream).buffer, function (b) { fb.scream = b; }, function () {});
+			if (media.laugh) fb.audio.decodeAudioData(base64Bytes(media.laugh).buffer, function (b) { fb.laugh = b; }, function () {});
 		} catch (e) { fb.audio = null; }
 		// sound only works after a key press or click, so wake it on the first one
 		["keydown", "mousedown", "touchstart"].forEach(function (t) {
@@ -1460,22 +1461,26 @@
 	// When a tag matches the colours in one of the Among Us kill clips (black catches
 	// green, say), that kill plays in your face, for everyone, on every flash level
 	// (the pop-ups setting turns it off). The purple one brings its own scream,
-	// started so the loud part lands on the blast.
+	// started so the loud part lands on the blast. If the one who got killed tags
+	// their killer straight back, the laughing cat gets the last word.
 
 	// tagger's palette index -> caught player's -> clip
 	var KILLS = { 15: { 4: 0 }, 0: { 4: 1, 7: 2 }, 10: { 13: 3 } };   // black, red, purple; green, blue, white
 	var SCREAM_CLIP = 3, SCREAM_AT = 0.3;
-	var kill = { clips: [], canvas: null, ctx: null, show: null };
+	var kill = { clips: [], cat: null, canvas: null, ctx: null, show: null, revenge: null };
+
+	function loadClip(c) {
+		var at = 0;
+		return { w: c.w, h: c.h, total: c.durs.reduce(function (a, b) { return a + b; }, 0),
+			ends: c.durs.map(function (x) { return at += x; }),
+			frames: c.frames.map(function (src) { var im = new Image(); im.src = src; return im; }) };
+	}
 
 	function setupKill() {
-		var d = window.TAG_MEDIA && window.TAG_MEDIA.amogus;
-		if (!d) return;
-		kill.clips = d.map(function (c) {
-			var at = 0;
-			return { w: c.w, h: c.h, total: c.durs.reduce(function (a, b) { return a + b; }, 0),
-				ends: c.durs.map(function (x) { return at += x; }),
-				frames: c.frames.map(function (src) { var im = new Image(); im.src = src; return im; }) };
-		});
+		var media = window.TAG_MEDIA;
+		if (!media || !media.amogus) return;
+		kill.clips = media.amogus.map(loadClip);
+		if (media.cat) kill.cat = loadClip(media.cat);
 		kill.canvas = document.createElement("canvas");
 		kill.canvas.style.cssText = "position:fixed;z-index:56;pointer-events:none;display:none;border-radius:14px;" +
 			"border:6px solid #fff;box-shadow:0 0 0 3px #000,inset 0 0 0 3px #000,0 8px 0 3px #000";
@@ -1485,14 +1490,27 @@
 
 	function killTag(was, prey) {
 		if (!kill.clips.length || !prefs.popups || !was || !prey) return;
+		// only the very next tag can be the comeback
+		var r = kill.revenge;
+		kill.revenge = null;
+		if (r && r.layout === rt.running_layout && was.slot === r.victim && prey.slot === r.killer) {
+			if (kill.cat) showKill(kill.cat, fb.laugh, 0, fb.laugh ? fb.laugh.duration : 2);
+			return;
+		}
 		var n = (KILLS[paintOf(was.input, was.base)] || {})[paintOf(prey.input, prey.base)];
 		if (n === undefined || !kill.clips[n]) return;
-		var c = kill.clips[n], already = !!kill.show;
-		kill.show = { clip: c, start: performance.now() / 1000 };
+		showKill(kill.clips[n], n === SCREAM_CLIP && fb.scream, SCREAM_AT, 0);
+		kill.revenge = { killer: was.slot, victim: prey.slot, layout: rt.running_layout };
+	}
+
+	// Plays a clip for at least minTime seconds, with an optional sound from `at` seconds in.
+	function showKill(c, sound, at, minTime) {
+		var already = !!kill.show;
+		kill.show = { clip: c, start: performance.now() / 1000, hold: Math.max(c.total, minTime) };
 		kill.canvas.width = c.w;
 		kill.canvas.height = c.h;
 		kill.canvas.style.display = "block";
-		if (n === SCREAM_CLIP && fb.audio && fb.scream) playSound(fb.scream, fb.audio.currentTime + SCREAM_AT);
+		if (sound && fb.audio) playSound(sound, fb.audio.currentTime + at);
 		if (!already) requestAnimationFrame(drawKill);
 	}
 
@@ -1501,7 +1519,7 @@
 		if (!s) return;
 		var c = s.clip, t = performance.now() / 1000 - s.start;
 		// in fast, the whole kill, a beat on the body, out quick
-		var hold = c.total + 0.3;
+		var hold = s.hold + 0.3;
 		if (t > hold + 0.2) {
 			kill.show = null;
 			kill.canvas.style.display = "none";

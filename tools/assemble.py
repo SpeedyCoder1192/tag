@@ -14,6 +14,9 @@ media = ('<script>window.TAG_MEDIA={flashbang:"%s",jarona:"%s",transition:%s,pal
          (b64(f"{root}/media/flashbang.mp3"), b64(f"{root}/media/jarona.mp3"), open(f"{root}/media/grenade.json").read(),
           open(f"{root}/media/palette.json").read(), open(f"{root}/media/dunk.json").read(), b64(f"{root}/media/heehee.mp3"),
           open(f"{root}/media/mj.json").read(), open(f"{root}/media/amogus.json").read(), b64(f"{root}/media/scream.mp3")))
+# the laughing cat, once its files are in
+if os.path.exists(f"{root}/media/cat.json") and os.path.exists(f"{root}/media/laugh.mp3"):
+    media = media.replace("};</script>", ',cat:%s,laugh:"%s"};</script>' % (open(f"{root}/media/cat.json").read(), b64(f"{root}/media/laugh.mp3")))
 for key, value in (("__CAPTION_FONT__", b64(font)),
                    ("__REPLAYS__", "[" + ",".join(open(c).read() for c in sorted(glob.glob(f"{root}/rec/clips/*.json"))) + "]")):
     assert splash.count(key) == 1, key
