@@ -3032,6 +3032,9 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 	// The menu font sheet: 12x15 cells, 13 to a row (lowercase rows look the same as capitals).
 	var FONT_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,;:?!-_~#\"'&()[]|`\\/@\u00b0+=*$\u00a3\u20ac<>";
 
+	// One of the original game's files, for CSS. The saved offline copy has them packed in.
+	function gameFile(name) { return window.TAG_LOCAL ? window.TAG_LOCAL(name) : name; }
+
 	function esc(t) {
 		return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
 	}
@@ -3204,7 +3207,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		".mwBar i{display:block;height:100%;background:#fff}" +
 		// the pixel font itself
 		".px{display:inline-flex;white-space:nowrap;vertical-align:middle}" +
-		".px i{display:block;font-style:normal;font-size:0;color:transparent;background:url(menutext.png) no-repeat;image-rendering:pixelated}" +
+		".px i{display:block;font-style:normal;font-size:0;color:transparent;background:url(" + gameFile("menutext.png") + ") no-repeat;image-rendering:pixelated}" +
 		".px.s1 i{width:12px;height:15px;margin-right:-1px;background-size:156px 120px}" +
 		".px.s2 i{width:24px;height:30px;margin-right:-2px;background-size:312px 240px}" +
 		".px.s3 i{width:36px;height:45px;margin-right:-3px;background-size:468px 360px}" +
@@ -3266,7 +3269,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 		var html;
 		if (window.TAG_OFFLINE) {
 			html = note("THIS IS THE OFFLINE COPY. ONLINE PLAY AND VOICE CHAT NEED THE WEBSITE:") +
-				note("SPEEDYCODER1192.QZZ.IO/TAG");
+				'<div class="bp-note">' + px("SPEEDYCODER1192") + "<br>" + px(".QZZ.IO/TAG") + "</div>";
 		} else if (net.role === "host") {
 			html = '<div class="bp-row"><div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div>" +
 				'<button data-a="stop">' + px("STOP") + "</button></div>" +
@@ -3395,7 +3398,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 				look = palette && palette.boxes[idx] ? "url(" + palette.boxes[idx].src + ") 0 0/100% 100% no-repeat" : "#e4453a";
 				text = slotLabel(e.id) || (net.role === "guest" && net.pings[e.id] !== undefined ? net.pings[e.id] + "ms" : "P" + (k + 5));
 			} else {
-				look = "url(playercolor-sheet0.png) -1px -1px/256px 256px no-repeat";   // the game's empty box
+				look = "url(" + gameFile("playercolor-sheet0.png") + ") -1px -1px/256px 256px no-repeat";   // the game's empty box
 				text = "P" + (k + 5);
 			}
 			if (box.__look !== look) { box.style.background = look; box.__look = look; }
@@ -3565,6 +3568,7 @@ if (location.protocol === "http:" && /(^|\.)(qzz\.io|github\.io)$/.test(location
 
 	function offlineShim(files) {
 		window.TAG_OFFLINE = true;
+		window.TAG_LOCAL = local;
 		var made = {};
 		function local(url) {
 			if (typeof url !== "string" || /^(data|blob):/.test(url)) return url;
