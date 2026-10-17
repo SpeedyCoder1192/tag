@@ -27,7 +27,8 @@ all in one HTML file. Open `index.html` in a browser, or play it on GitHub Pages
 - **Settings** — the gear button: intro, effects volume, gentle flashing (dimmer white,
   no flicker), screen shake, the meme pop-ups, ping tags, double-tap speed, and the
   touch pad (auto/on/off, size, which side the stick is on). Kept per device.
-- **Easter eggs** — be orange and land on someone from above. Or be black and catch white.
+- **Easter eggs** — be orange and land on someone from above. Or catch someone in the right
+  colours for an Among Us kill.
 
 ## Controls
 

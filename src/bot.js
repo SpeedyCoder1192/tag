@@ -1456,12 +1456,14 @@
 		requestAnimationFrame(drawMJ);
 	}
 
-	// ---------- the Among Us kill ----------
-	// When the black player tags the white one, a random Among Us kill plays in your
-	// face, for everyone, on every flash level (the pop-ups setting turns it off).
-	// Clip 4 brings its own scream, started so the loud part lands on the blast.
+	// ---------- the Among Us kills ----------
+	// When a tag matches the colours in one of the Among Us kill clips (black catches
+	// green, say), that kill plays in your face, for everyone, on every flash level
+	// (the pop-ups setting turns it off). The purple one brings its own scream,
+	// started so the loud part lands on the blast.
 
-	var BLACK = 15, WHITE = 13;   // palette indices
+	// tagger's palette index -> caught player's -> clip
+	var KILLS = { 15: { 4: 0 }, 0: { 4: 1, 7: 2 }, 10: { 13: 3 } };   // black, red, purple; green, blue, white
 	var SCREAM_CLIP = 3, SCREAM_AT = 0.3;
 	var kill = { clips: [], canvas: null, ctx: null, show: null };
 
@@ -1483,8 +1485,9 @@
 
 	function killTag(was, prey) {
 		if (!kill.clips.length || !prefs.popups || !was || !prey) return;
-		if (paintOf(was.input, was.base) !== BLACK || paintOf(prey.input, prey.base) !== WHITE) return;
-		var n = Math.floor(Math.random() * kill.clips.length), c = kill.clips[n], already = !!kill.show;
+		var n = (KILLS[paintOf(was.input, was.base)] || {})[paintOf(prey.input, prey.base)];
+		if (n === undefined || !kill.clips[n]) return;
+		var c = kill.clips[n], already = !!kill.show;
 		kill.show = { clip: c, start: performance.now() / 1000 };
 		kill.canvas.width = c.w;
 		kill.canvas.height = c.h;
