@@ -3375,14 +3375,19 @@
 		var plat = it.behavior_insts[0], id = it.instance_vars[4];
 		plat.maxspeed *= JUGG_SPEED;
 		plat.enableDoubleJump = true;
-		// a third jump: a fresh press in the air after the double jump
-		if (plat.dy === 0 && plat.lastFloorObject) m.thirdUsed = false;
+		// a third jump: a fresh press in the air after the double jump. The double jump
+		// counts only if it was used before this press, since a key press can make the
+		// game do the double jump in the same tick we see it. Landing (not bumping a
+		// ceiling) gives the third jump back.
+		var onFloor = plat.isOnFloor();
+		if (onFloor) m.thirdUsed = false;
 		var pressed = m.up[id] && !m.upBefore[id];
-		if (pressed && plat.doubleJumped && !m.thirdUsed && !(plat.dy === 0 && plat.lastFloorObject)) {
+		if (pressed && m.djBefore && !m.thirdUsed && !onFloor) {
 			plat.dy = -plat.jumpStrength;
 			m.thirdUsed = true;
 			m.thirds = (m.thirds || 0) + 1;
 		}
+		m.djBefore = plat.doubleJumped && !onFloor;
 		m.upBefore = m.up;
 		m.up = {};
 
