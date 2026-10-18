@@ -20,9 +20,13 @@
 			chaser: function (m, slot) { return isFreezer(m, slot); },
 			chaseable: function (m, slot) { return !isFreezer(m, slot) && m.frozen[slot] === undefined; },
 			blocksTag: freezeCatch, blocksInput: function (m, slot) { return m.frozen[slot] !== undefined; }, rescue: freezeRescue,
-			view: freezeView, tint: freezeTint, aura: freezeAura }
+			view: freezeView, tint: freezeTint, aura: freezeAura },
+		juggernaut: { name: "JUGGERNAUT", start: juggStart, before: holdTimer, tick: juggTick, clock: function (m) { return m.time; },
+			blocksTag: function (m) { return !!m.started; }, input: juggInput,
+			airJumps: function (m, slot) { return slot === gvar("taggerID") ? 2 : 0; }, show: juggShow,
+			scale: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? JUGG_SIZE : 1; } }
 	};
-	var MODE_LIST = ["classic", "potato", "infection", "freeze"];
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -416,6 +420,8 @@
 
 		if (!me.surf) return this.inAir(me, others);
 		this.air = null;
+		this.airJumps = cfg.predict ? modeAirJumps(me.slot) : 0;   // hard and impossible bots use them
+		this.lastAirJump = 0;
 
 		var edges = graphFor(vmax);
 
@@ -603,6 +609,18 @@
 
 	Bot.prototype.inAir = function (me, others) {
 		var e = this.air, self = this;
+		// extra air jumps a mode gives (the juggernaut's double and triple): when the
+		// one being chased is above and the jump is running out, jump again
+		if (this.airJumps > 0 && this.target >= 0) {
+			var prey = others.filter(function (p) { return p.slot === self.target; })[0];
+			if (prey && prey.y < me.y - 40 && me.dy > -150 && clock - this.lastAirJump > 0.2) {
+				this.jump();
+				this.airJumps--;
+				this.lastAirJump = clock;
+				this.press(Math.sign(prey.x - me.x));
+				return;
+			}
+		}
 		if (e) {
 			this.press(e.hold);
 			if (e.dj && !this.djDone && me.dy > -60) { this.jump(); this.djDone = true; }
@@ -1234,35 +1252,41 @@
 		var proto = cr.plugins_.Sprite.prototype.Instance.prototype, drawGL = proto.drawGL;
 		proto.drawGL = function (glw) {
 			if (rt && this.type === rt.types_by_index[T_VISUAL]) {
-				var look = null;
+				var unscale = null;
+				try { unscale = scaleForDraw(this); } catch (e) {}
 				try { drawAura(this, glw); } catch (e) {}
-				try {
-					look = paletteLook(this);
-					drawTrail(this, glw, look ? look.tex : this.curWebGLTexture, look ? look.uv : this.curFrame.sheetTex);
-				} catch (e) {}
-				var q = this.bquad;
-				if (!look) drawGL.call(this, glw);
-				else {
-					glw.setTexture(look.tex);
-					glw.setOpacity(this.opacity);
-					glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, look.uv);
-				}
-				// a mode's colour wash on top (the infected go green)
-				try {
-					var tint = modeTint(this), over = tint && lookIn(this, tint.colour);
-					if (over) {
-						glw.setTexture(over.tex);
-						glw.setOpacity(this.opacity * tint.amount);
-						glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, over.uv);
-					}
-				} catch (e) {}
-				return;
+				try { return drawVisual.call(this, glw); } finally { if (unscale) unscale(); }
 			}
 			if (palette && rt && this.type === rt.types_by_index[T_SLOTFILL]) {
 				try { if (paintedDraw(this, glw)) return; } catch (e) {}
 			}
 			drawGL.call(this, glw);
 		};
+
+		// A player's sprite: in their palette colour, with any trail and mode tint.
+		function drawVisual(glw) {
+			var look = null;
+			try {
+				look = paletteLook(this);
+				drawTrail(this, glw, look ? look.tex : this.curWebGLTexture, look ? look.uv : this.curFrame.sheetTex);
+			} catch (e) {}
+			var q = this.bquad;
+			if (!look) drawGL.call(this, glw);
+			else {
+				glw.setTexture(look.tex);
+				glw.setOpacity(this.opacity);
+				glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, look.uv);
+			}
+			// a mode's colour wash on top (the infected go green)
+			try {
+				var tint = modeTint(this), over = tint && lookIn(this, tint.colour);
+				if (over) {
+					glw.setTexture(over.tex);
+					glw.setOpacity(this.opacity * tint.amount);
+					glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, over.uv);
+				}
+			} catch (e) {}
+		}
 	})();
 
 	// ---------- moonwalk ----------
@@ -2864,6 +2888,25 @@
 		glw.quadTex(cx - r, cy - r, cx + r, cy - r, cx + r, cy + r, cx - r, cy + r, FULL_UV);
 	}
 
+	// Draw a player bigger (or smaller) if their mode says so, standing on the same
+	// spot. Only the picture: their body in the level stays the same size.
+	// Returns a function that puts the sprite back.
+	function scaleForDraw(inst) {
+		var d = mode && MODES[mode.id];
+		if (!d || !d.scale) return null;
+		var owner = (inst.siblings || []).filter(function (s) { return s.type === rt.types_by_index[T_PLAYER_ID]; })[0];
+		var k = owner ? d.scale(mode, modeShown(), owner.instance_vars[2]) : 1;
+		if (k === 1) return null;
+		var q = inst.bquad, saved = [q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly];
+		var cx = (q.blx + q.brx) / 2, by = (q.bly + q.bry) / 2;
+		q.tlx = cx + (q.tlx - cx) * k; q.trx = cx + (q.trx - cx) * k; q.brx = cx + (q.brx - cx) * k; q.blx = cx + (q.blx - cx) * k;
+		q.tly = by + (q.tly - by) * k; q.try_ = by + (q.try_ - by) * k; q.bry = by + (q.bry - by) * k; q.bly = by + (q.bly - by) * k;
+		return function () {
+			q.tlx = saved[0]; q.tly = saved[1]; q.trx = saved[2]; q.try_ = saved[3];
+			q.brx = saved[4]; q.bry = saved[5]; q.blx = saved[6]; q.bly = saved[7];
+		};
+	}
+
 	// A colour to wash over a player's sprite, if their mode gives them one.
 	function modeTint(inst) {
 		var d = mode && MODES[mode.id];
@@ -2881,10 +2924,17 @@
 	// A player's moves, ignored while a mode holds them still (joining and menus still work).
 	function modeBlocksInput(id, what) {
 		var d = mode && MODES[mode.id];
+		if (d && d.input && net.role !== "guest") d.input(mode, id, what);
 		if (!d || !d.blocksInput || net.role === "guest" || gvar("gameState") !== "Game") return false;
 		if (what !== "left" && what !== "right" && what !== "up" && what !== "down") return false;
 		var p = playerById(id);
 		return !!(p && d.blocksInput(mode, p.instance_vars[2]));
+	}
+
+	// Extra jumps in the air a mode gives someone, beyond their normal one.
+	function modeAirJumps(slot) {
+		var d = mode && MODES[mode.id];
+		return d && d.airJumps ? d.airJumps(mode, slot) : 0;
 	}
 
 	// A teammate a runner bot should go and help (Freeze Tag), or null.
@@ -3291,6 +3341,74 @@
 			var s = rt.createInstance(type, layer, x + (Math.random() - 0.5) * 50, y + (Math.random() - 0.5) * 50);
 			if (s) rt.trigger(Object.getPrototypeOf(s.type.plugin).cnds.OnCreated, s);
 		}
+	}
+
+	// ---- juggernaut ----
+	// Whoever starts as it is the juggernaut for the whole game: drawn bigger (with
+	// the reach to match), faster, and with a triple jump. Anyone they catch is
+	// smashed out of the game. Catch everyone to win; runners still standing when the
+	// round timer runs out win.
+
+	var JUGG_SIZE = 1.6, JUGG_SPEED = 1.3;
+
+	function juggStart(m) {
+		m.time = gvar("timer") || 200;
+		m.up = {}; m.upBefore = {}; m.thirdUsed = false;
+	}
+
+	// Their jump presses, to spot a third one in the air.
+	function juggInput(m, id, what) {
+		if (what === "up") m.up[id] = true;
+	}
+
+	function juggTick(m, dt) {
+		m.started = true;
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		var it = players.filter(function (p) { return p.instance_vars[2] === tg; })[0];
+		var runners = players.filter(function (p) { return p !== it; });
+		if (!runners.length) return endMode((it ? colourName(it) : "THE JUGGERNAUT") + " SMASHED EVERYONE", 1.2);
+		if (m.time <= 0) return endMode(runners.length === 1 ? colourName(runners[0]) + " SURVIVED" :
+			runners.length === 2 ? colourName(runners[0]) + " AND " + colourName(runners[1]) + " SURVIVED" : runners.length + " RUNNERS SURVIVED");
+		if (!it) return;
+
+		var plat = it.behavior_insts[0], id = it.instance_vars[4];
+		plat.maxspeed *= JUGG_SPEED;
+		plat.enableDoubleJump = true;
+		// a third jump: a fresh press in the air after the double jump
+		if (plat.dy === 0 && plat.lastFloorObject) m.thirdUsed = false;
+		var pressed = m.up[id] && !m.upBefore[id];
+		if (pressed && plat.doubleJumped && !m.thirdUsed && !(plat.dy === 0 && plat.lastFloorObject)) {
+			plat.dy = -plat.jumpStrength;
+			m.thirdUsed = true;
+			m.thirds = (m.thirds || 0) + 1;
+		}
+		m.upBefore = m.up;
+		m.up = {};
+
+		// smash anyone in reach (once the opening 3-2-1 is over)
+		if (gvar("timeOut") !== 0) return;
+		runners.forEach(function (r) {
+			if (r.instance_vars[2] === undefined || !juggReach(it, r)) return;
+			boomAt(r.x, r.y, true);
+			if (isLocal(r.instance_vars[4])) flashbang("smashed");
+			rt.DestroyInstance(r);
+		});
+	}
+
+	// The arrow (and its 3-2-1) over a bigger player goes up to clear their head.
+	function juggShow() {
+		var lift = 33 * (JUGG_SIZE - 1);
+		[instances(25)[0], instances(31)[0]].forEach(function (i) {
+			if (i) { i.y -= lift; i.set_bbox_changed(); }
+		});
+	}
+
+	// Their reach grows with their size. Positions are the middle of a 33px body, and
+	// the big picture stands on the same feet, so its middle is higher up.
+	function juggReach(it, r) {
+		var half = 16.5 * JUGG_SIZE + 16.5, bigMiddle = it.y + 16.5 - 16.5 * JUGG_SIZE;
+		return Math.abs(r.x - it.x) < half && Math.abs(r.y - bigMiddle) < half;
 	}
 
 	// ---------- settings and the guide ----------
