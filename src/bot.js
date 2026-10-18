@@ -27,15 +27,20 @@
 			scale: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? JUGG_SIZE : 1; } }
 	};
 	MODES.hill = { name: "KING OF THE HILL", start: hillStart, before: holdTimer, tick: hillTick, clock: function (m) { return m.time; },
-		rescue: hillGoal, chaseBonus: function (m, slot) { return m.on && m.on[slot] ? 1 : 0; },
+		rescue: hillGoal, hud: true, chaseBonus: function (m, slot) { return m.on && m.on[slot] ? 1 : 0; },
 		view: function (m) { return { hill: m.hill ? floorKey(m.hill.inst) : "", score: m.score, on: m.on }; }, show: hillShow };
 	MODES.reverse = { name: "REVERSE TAG", start: reverseStart, before: holdTimer, tick: reverseTick, clock: function (m) { return m.time; },
 		chaser: function (m, slot) { return slot !== gvar("taggerID"); }, chaseable: function (m, slot) { return slot === gvar("taggerID"); },
-		blocksTag: function (m) { return !!m.started; },
+		blocksTag: function (m) { return !!m.started; }, hud: true,
 		view: function (m) { var on = {}; on[gvar("taggerID")] = true; return { score: m.score, on: on }; }, show: reverseShow,
 		aura: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? "gold" : null; } };
 	MODES.blackout = { name: "BLACKOUT", show: blackoutShow, sees: blackoutSees };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout"];
+	MODES.teams = { name: "TEAMS", start: teamsStart, before: holdTimer, tick: teamsTick, clock: function (m) { return m.time; },
+		chaser: function (m, slot) { return !!m.team && m.team[slot] === m.turn; },
+		chaseable: function (m, slot) { return !!m.team && m.team[slot] !== undefined && m.team[slot] !== m.turn && !m.caught[slot]; },
+		blocksTag: function (m) { return !!m.started; }, blocksInput: teamsHold, hud: true,
+		view: teamsView, show: teamsShow, tint: teamsTint, aura: teamsAura };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -2901,7 +2906,7 @@
 	}
 
 	// A soft glow behind a player, if their mode gives them one (a canvas gradient per colour).
-	var AURAS = { blue: "60,150,255", orange: "255,110,40", gold: "255,210,50" }, auraTex = {};
+	var AURAS = { blue: "60,150,255", orange: "255,110,40", gold: "255,210,50", red: "255,50,50" }, auraTex = {};
 	function drawAura(inst, glw) {
 		var d = mode && MODES[mode.id];
 		if (!d || !d.aura) return;
@@ -3031,7 +3036,7 @@
 			if (def.clock) showClock(def.clock(mode));
 		}
 		if (def.show) def.show(mode, modeShown());
-		if (def.show !== hillShow && def.show !== reverseShow) hideHillHud();
+		if (!def.hud) hideHillHud();
 		drawModeResult();
 	}
 
@@ -3121,7 +3126,10 @@
 	var modeResult = document.createElement("div");
 	modeResult.id = "modeResult";
 	function drawModeResult() {
-		var text = mode && gvar("gameState") === "GameOver" ? mode.result : "";
+		// in game, a mode can put up a line of its own (Teams: whose turn it is)
+		var over = gvar("gameState") === "GameOver", banner = mode && !over && gvar("gameState") === "Game" && modeShown().banner;
+		var text = mode && over ? mode.result : banner || "";
+		modeResult.className = banner ? "banner" : "";
 		if (modeResult.__t !== text) { modeResult.__t = text; modeResult.innerHTML = text ? "<span>" + px(text, 3) + "</span>" : ""; }
 		modeResult.style.display = text ? "block" : "none";
 		if (text) placeOver(modeResult);
@@ -3247,10 +3255,15 @@
 			}
 			vis.set_bbox_changed();
 		});
+		arrowsOver(v.infected || []);
+	}
+
+	// Copies of the arrow over whoever's it, for everyone else in `slots`.
+	function arrowsOver(slots) {
 		var arrowType = rt.types_by_index[25], original = instances(25)[0];
 		if (!arrowType || !original) return;
-		var tg = gvar("taggerID"), want = instances(T_PLAYER).filter(function (p) {
-			return (v.infected || []).indexOf(p.instance_vars[2]) >= 0 && p.instance_vars[2] !== tg;
+		var tg = net.role === "guest" ? net.host && net.host.tg : gvar("taggerID"), want = instances(T_PLAYER).filter(function (p) {
+			return slots.indexOf(p.instance_vars[2]) >= 0 && p.instance_vars[2] !== tg;
 		});
 		extraArrows = extraArrows.filter(function (a) { return arrowType.instances.indexOf(a) >= 0; });
 		while (extraArrows.length < want.length) {
@@ -3705,6 +3718,151 @@
 		glw.quadTex(vl, vt, vl + vw, vt, vl + vw, vt + vh, vl, vt + vh, FULL_UV);
 	}
 
+	// ---- teams ----
+	// Two teams, picked alternately down the player list (so 2v2, 3v3, or one extra on
+	// a side). The team with whoever's it chases first: every one of them can catch,
+	// all at the tagger's speed. Caught runners are out for the rest of the turn,
+	// greyed and stuck where they stand. When everyone's caught (or the turn's time is
+	// up) everyone goes back to where they started and the other team chases. Catching
+	// more people wins, and if both teams caught everyone, the faster one.
+
+	var TEAM_NAMES = ["BLUE TEAM", "RED TEAM"], TEAM_AURAS = ["blue", "red"], TEAM_RGB = ["60,150,255", "255,50,50"];
+	var TEAM_BANNER = 2.5;   // seconds "X TEAM CHASES" stays up
+
+	function teamsStart(m) {
+		m.time = m.turnLen = Math.max(30, Math.round((gvar("timer") || 120) / 2));
+		m.caught = {};
+		m.res = [];
+		m.spawn = {};
+	}
+
+	// Set up once the game has picked its first tagger: their team goes first.
+	function makeTeams(m) {
+		m.team = {};
+		joinTeams(m);
+		m.turn = m.team[gvar("taggerID")] || 0;
+		m.first = m.turn;
+		m.took = 0;
+		m.bannerUntil = clock + TEAM_BANNER;
+	}
+
+	// Players 5 and 6 arrive a moment after the level starts: they go on the smaller side.
+	function joinTeams(m) {
+		instances(T_PLAYER).filter(function (p) { return p.instance_vars[2] !== undefined && m.team[p.instance_vars[2]] === undefined; })
+			.sort(function (a, b) { return a.instance_vars[2] - b.instance_vars[2]; })
+			.forEach(function (p) {
+				var sizes = [0, 0];
+				Object.keys(m.team).forEach(function (s) { sizes[m.team[s]]++; });
+				m.team[p.instance_vars[2]] = sizes[1] < sizes[0] ? 1 : 0;
+				m.spawn[p.instance_vars[2]] = { x: p.x, y: p.y };
+			});
+	}
+
+	function teamsHold(m, slot) {
+		if (!m.team) return false;
+		if (m.caught[slot]) return true;
+		// the chasers wait out the 3-2-1 at the start of their turn
+		return m.team[slot] === m.turn && gvar("timeOut") !== 0;
+	}
+
+	function teamsTick(m, dt) {
+		if (!m.team) makeTeams(m);
+		if (!m.res.length) joinTeams(m);
+		// the game can pick its first tagger a moment after this: their team chases first
+		if (!m.res.length && !m.took) m.turn = m.first = m.team[gvar("taggerID")] || 0;
+		m.started = true;
+		var players = instances(T_PLAYER).filter(function (p) { return m.team[p.instance_vars[2]] !== undefined; });
+
+		var chasers = players.filter(function (p) { return m.team[p.instance_vars[2]] === m.turn; });
+		var runners = players.filter(function (p) { return m.team[p.instance_vars[2]] !== m.turn; });
+		var free = runners.filter(function (p) { return !m.caught[p.instance_vars[2]]; });
+		var started = gvar("timeOut") === 0;
+		if (started) { m.time = Math.max(0, m.time - dt); m.took += dt; }
+
+		players.forEach(function (p) {
+			var slot = p.instance_vars[2], plat = p.behavior_insts[0];
+			if (m.caught[slot]) plat.dx = 0;
+			else if (m.team[slot] === m.turn && slot !== gvar("taggerID")) plat.maxspeed *= 450 / 400;   // the tagger's speed
+		});
+
+		// catches
+		if (started) chasers.forEach(function (c) {
+			free.forEach(function (r) {
+				var slot = r.instance_vars[2];
+				if (m.caught[slot] || !touching(c, r)) return;
+				m.caught[slot] = true;
+				r.behavior_insts[0].dx = 0;
+				starsAt(r.x, r.y, 8);
+				if (flashLevel() && isLocal(r.instance_vars[4])) flashbang("tag");
+			});
+		});
+		free = free.filter(function (p) { return !m.caught[p.instance_vars[2]]; });
+
+		var took = m.took, other = m.res[0];
+		// the second team can't beat a full sweep any more: no need to play it out
+		var lost = other && other.all && took > other.time;
+		if (free.length && m.time > 0 && !lost) return;
+		m.res.push({ all: !free.length && !lost, time: took, n: runners.length - free.length, of: runners.length });
+		if (m.res.length === 1) return nextTurn(m, players);
+
+		var a = m.res[0], b = m.res[1], win;
+		if (a.all && b.all) win = Math.abs(a.time - b.time) < 0.05 ? -1 : a.time < b.time ? m.first : 1 - m.first;
+		else if (a.all !== b.all) win = a.all ? m.first : 1 - m.first;
+		else win = a.n / a.of === b.n / b.of ? -1 : a.n / a.of > b.n / b.of ? m.first : 1 - m.first;
+		endMode(win < 0 ? "IT'S A TIE" : TEAM_NAMES[win] + " WINS", 1);
+	}
+
+	// Everyone back to the start, free again, and the other side chases: one of them
+	// becomes it, so they all wait out the game's 3-2-1 while the runners scatter.
+	function nextTurn(m, players) {
+		m.turn = 1 - m.turn;
+		m.caught = {};
+		m.time = m.turnLen;
+		m.took = 0;
+		m.bannerUntil = clock + TEAM_BANNER;
+		var lead = players.filter(function (p) { return m.team[p.instance_vars[2]] === m.turn; })[0];
+		if (lead) tagFor(-1, lead.instance_vars[2], -1);
+		players.forEach(function (p) {
+			var at = m.spawn[p.instance_vars[2]], plat = p.behavior_insts[0];
+			if (!at) return;
+			starsAt(p.x, p.y, 4);
+			p.x = at.x; p.y = at.y;
+			plat.dx = plat.dy = 0;
+			p.set_bbox_changed();
+		});
+	}
+
+	function teamsView(m) {
+		if (!m.team) return {};
+		var live = m.took;
+		return { team: m.team, turn: m.turn, first: m.first, caught: Object.keys(m.caught).map(Number), res: m.res,
+			live: Math.round(live * 10) / 10,
+			banner: clock < m.bannerUntil ? TEAM_NAMES[m.turn] + " CHASES" : "" };
+	}
+
+	function teamsTint(m, v, slot) {
+		return (v.caught || []).indexOf(slot) >= 0 ? { colour: 14, amount: 0.65 } : null;
+	}
+
+	function teamsAura(m, v, slot) {
+		return v.team && v.team[slot] !== undefined ? TEAM_AURAS[v.team[slot]] : null;
+	}
+
+	// Arrows over the whole chasing side, and each team's turn in the corner:
+	// how long they took to catch everyone, or how many they got.
+	function teamsShow(m, v) {
+		if (!v.team) return hideHillHud();
+		arrowsOver(Object.keys(v.team).map(Number).filter(function (s) { return v.team[s] === v.turn; }));
+		var html = [v.first, 1 - v.first].map(function (t, i) {
+			var r = (v.res || [])[i], text = r ? (r.all ? r.time.toFixed(1) : r.n + "/" + r.of) :
+				t === v.turn && typeof v.live === "number" ? v.live.toFixed(1) : "-";
+			return '<div class="hh-row' + (t === v.turn && !r ? " on" : "") + '"><b class="hh-sw" style="background:rgb(' + TEAM_RGB[t] + ')"></b>' + px(text, 2) + "</div>";
+		}).join("");
+		if (hillHud.__h !== html) { hillHud.__h = html; hillHud.innerHTML = html; }
+		hillHud.style.display = "block";
+		placeOver(hillHud);
+	}
+
 	// ---------- settings and the guide ----------
 	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
 	// everything (with keyboard and touch versions of the controls), the gear opens
@@ -3991,7 +4149,7 @@
 		"#hillHud .hh-row:first-child{margin-top:14px}#hillHud .hh-row.on{opacity:1}" +
 		"#hillHud .hh-sw{display:block;width:18px;height:18px;border-radius:4px;box-shadow:0 0 0 2px #fff,0 0 0 4px #000}" +
 		"#hillHud .hh-row.on .hh-sw{box-shadow:0 0 0 2px #ffd23c,0 0 0 4px #000,0 0 10px 4px rgba(255,210,60,.7)}" +
-		"#modeResult{z-index:12;display:none}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}" +
+		"#modeResult{z-index:12;display:none}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}#modeResult.banner>span{top:150px}" +
 		"#extraSlots .xs{position:absolute;top:" + (SLOT_Y - 45) + "px;width:152px;height:90px;display:flex;align-items:center;justify-content:center;image-rendering:pixelated}" +
 		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
 		// beside the game's own fullscreen and sound buttons, in their style
