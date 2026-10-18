@@ -3101,7 +3101,7 @@
 		players.forEach(function (p) {
 			var slot = p.instance_vars[2];
 			if (!m.infected[slot] || slot === tg || gvar("timeOut") !== 0) return;
-			var prey = runners.filter(function (r) { return Math.abs(r.x - p.x) < 30 && Math.abs(r.y - p.y) < 30; })[0];
+			var prey = runners.filter(function (r) { return touching(r, p); })[0];
 			if (prey) { m.infected[prey.instance_vars[2]] = true; tagFor(slot, prey.instance_vars[2]); }
 		});
 	}
@@ -3217,7 +3217,7 @@
 			if (since !== undefined) {
 				p.behavior_insts[0].dx = 0;
 				// a free runner touching them thaws them out
-				var friend = free.filter(function (f) { return Math.abs(f.x - p.x) < 30 && Math.abs(f.y - p.y) < 30; })[0];
+				var friend = free.filter(function (f) { return touching(f, p); })[0];
 				if (friend) {
 					delete m.frozen[slot];
 					m.safe[slot] = clock + THAW_SAFE;
@@ -3230,7 +3230,7 @@
 				}
 			} else if (m.freezers[slot]) {
 				// freezers other than the tagger make their own catches
-				var prey = free.filter(function (f) { return Math.abs(f.x - p.x) < 30 && Math.abs(f.y - p.y) < 30; })[0];
+				var prey = free.filter(function (f) { return touching(f, p); })[0];
 				if (prey) freezePlayer(m, prey);
 			}
 		});
@@ -3264,6 +3264,22 @@
 			if (risk > 220 && d < bestD) { bestD = d; best = p; }
 		});
 		return best;
+	}
+
+	// Two players touching, the way the game decides a tag: their sprites overlap.
+	// (Their bodies are solid when player collision is on, so those never overlap.)
+	function touching(a, b) {
+		var va = visualOf(a.instance_vars[2]), vb = visualOf(b.instance_vars[2]);
+		if (va && vb) {
+			va.update_bbox();
+			vb.update_bbox();
+			if (rt.testOverlap(va, vb)) return true;
+		}
+		return Math.abs(a.x - b.x) < 34 && Math.abs(a.y - b.y) < 34;
+	}
+
+	function visualOf(slot) {
+		return instances(T_VISUAL).filter(function (v) { return v.instance_vars[0] === slot; })[0];
 	}
 
 	// The game's tag stars, without the bang (sent to friends too, from the host).

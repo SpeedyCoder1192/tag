@@ -22,7 +22,7 @@ for key, value in (("__CAPTION_FONT__", b64(font)),
     assert splash.count(key) == 1, key
     splash = splash.replace(key, value)
 if os.environ.get("TEST"):
-    bot = bot.replace("/*TEST_EXPORTS*/", "window.__fb = fb; window.__flashbang = flashbang; window.__settings = settings; window.__paints = function () { return paints; }; window.__vkey = virtualKey; window.__touch = touch; window.__dunk = dunk; window.__mw = mw; window.__mj = mj; window.__kill = kill; window.__killTag = killTag; window.__voice = voice; window.__prefs = prefs; window.__mode = function () { return mode; }; window.__endMode = endMode;")
+    bot = bot.replace("/*TEST_EXPORTS*/", "window.__fb = fb; window.__flashbang = flashbang; window.__settings = settings; window.__paints = function () { return paints; }; window.__vkey = virtualKey; window.__touch = touch; window.__dunk = dunk; window.__mw = mw; window.__mj = mj; window.__kill = kill; window.__killTag = killTag; window.__voice = voice; window.__prefs = prefs; window.__mode = function () { return mode; }; window.__endMode = endMode; window.__touching = touching;")
     # test builds only: #at=SECONDS freezes the splash on that moment, #clip=N picks the clip
     splash = splash.replace("/*TEST_HOOK*/", 'var m = /at=([0-9.]+)/.exec(location.hash); if (m) { t = +m[1]; dt = 1 / 60; }')
     splash = splash.replace("var REPLAY = REPLAYS[Math.floor(Math.random() * REPLAYS.length)];",
