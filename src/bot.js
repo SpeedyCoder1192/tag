@@ -29,7 +29,12 @@
 	MODES.hill = { name: "KING OF THE HILL", start: hillStart, before: holdTimer, tick: hillTick, clock: function (m) { return m.time; },
 		rescue: hillGoal, chaseBonus: function (m, slot) { return m.on && m.on[slot] ? 1 : 0; },
 		view: function (m) { return { hill: m.hill ? floorKey(m.hill.inst) : "", score: m.score, on: m.on }; }, show: hillShow };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill"];
+	MODES.reverse = { name: "REVERSE TAG", start: reverseStart, before: holdTimer, tick: reverseTick, clock: function (m) { return m.time; },
+		chaser: function (m, slot) { return slot !== gvar("taggerID"); }, chaseable: function (m, slot) { return slot === gvar("taggerID"); },
+		blocksTag: function (m) { return !!m.started; },
+		view: function (m) { var on = {}; on[gvar("taggerID")] = true; return { score: m.score, on: on }; }, show: reverseShow,
+		aura: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? "gold" : null; } };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -1066,13 +1071,15 @@
 
 		var tg = gvar("taggerID"), tagger = bySlot(tg), last = watch.last || {};
 		if (watch.tagger !== null && tg !== watch.tagger) {
-			var caught = bySlot(tg);
-			if (level && caught && counts(caught)) flashbang("tag");
-			// where the two of them were just before the catch (a mode may say who really caught them)
+			// who caught whom: normally the old tagger caught the new one, but a mode may
+			// say otherwise (Reverse Tag: the new holder caught the old one)
 			var by = mode && mode.by !== undefined && mode.by !== null ? mode.by : watch.tagger;
-			if (mode) mode.by = null;
-			dunkTag(last[by], last[tg]);
-			killTag(last[by], last[tg]);
+			var victim = mode && mode.victim !== undefined && mode.victim !== null ? mode.victim : tg;
+			if (mode) mode.by = mode.victim = null;
+			var caught = bySlot(victim);
+			if (level && caught && counts(caught)) flashbang("tag");
+			dunkTag(last[by], last[victim]);
+			killTag(last[by], last[victim]);
 			watch.lastTag = clock; watch.near = {}; watch.floor = null; watch.floorSince = clock;
 		}
 		watch.tagger = tg;
@@ -2866,7 +2873,7 @@
 	}
 
 	// A soft glow behind a player, if their mode gives them one (a canvas gradient per colour).
-	var AURAS = { blue: "60,150,255", orange: "255,110,40" }, auraTex = {};
+	var AURAS = { blue: "60,150,255", orange: "255,110,40", gold: "255,210,50" }, auraTex = {};
 	function drawAura(inst, glw) {
 		var d = mode && MODES[mode.id];
 		if (!d || !d.aura) return;
@@ -2960,8 +2967,8 @@
 
 	// Tag someone on the game's behalf (the stars, the 3-2-1, flashbangs and easter
 	// eggs all follow), crediting whoever really made the catch.
-	function tagFor(by, slot) {
-		if (mode) mode.by = by;
+	function tagFor(by, slot, victim) {
+		if (mode) { mode.by = by; mode.victim = victim; }
 		window.c2_callFunction("Tag", [slot]);
 	}
 
@@ -2990,7 +2997,7 @@
 			if (def.clock) showClock(def.clock(mode));
 		}
 		if (def.show) def.show(mode, modeShown());
-		if (def.show !== hillShow) hideHillHud();
+		if (def.show !== hillShow && def.show !== reverseShow) hideHillHud();
 		drawModeResult();
 	}
 
@@ -3505,12 +3512,18 @@
 				hillGlow.inst = floors.map.get(hillGlow.key) || null;
 			} else hillGlow.inst = m.hill && m.hill.inst;
 		}
-		var players = instances(T_PLAYER), score = v.score || {};
+		showScores(v.score, v.on);
+	}
+
+	// Everyone's points in the corner, best first; "on" marks whoever is scoring now.
+	function showScores(score, onNow) {
+		score = score || {};
+		var players = instances(T_PLAYER);
 		var rows = players.map(function (p) { return { p: p, pts: Math.floor(score[p.instance_vars[2]] || 0) }; })
 			.sort(function (a, b) { return b.pts - a.pts; });
 		var html = rows.map(function (r) {
 			var idx = paintOf(r.p.instance_vars[4], r.p.instance_vars[5]), rgb = palette && palette.rgb ? palette.rgb[idx].join(",") : "255,255,255";
-			var on = (v.on || {})[r.p.instance_vars[2]];
+			var on = (onNow || {})[r.p.instance_vars[2]];
 			return '<div class="hh-row' + (on ? " on" : "") + '"><b class="hh-sw" style="background:rgb(' + rgb + ')"></b>' + px(String(r.pts), 2) + "</div>";
 		}).join("");
 		if (hillHud.__h !== html) { hillHud.__h = html; hillHud.innerHTML = html; }
@@ -3556,6 +3569,42 @@
 			} catch (e) {}
 		};
 	})();
+
+	// ---- reverse tag ----
+	// The arrow is the prize: holding it scores a point a second, and everyone else
+	// chases whoever has it. Touching the holder steals it, and the game's own 3-2-1
+	// keeps a new holder safe for a moment. First to 25 points wins, or whoever has
+	// most when the round timer runs out.
+
+	var REVERSE_WIN = 25;
+
+	function reverseStart(m) {
+		m.time = gvar("timer") || 200;
+		m.score = {};
+	}
+
+	function reverseTick(m, dt) {
+		m.started = true;
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		var holder = players.filter(function (p) { return p.instance_vars[2] === tg; })[0];
+		if (holder) m.score[tg] = (m.score[tg] || 0) + dt;
+
+		var ranked = players.slice().sort(function (a, b) { return (m.score[b.instance_vars[2]] || 0) - (m.score[a.instance_vars[2]] || 0); });
+		var best = ranked[0] ? m.score[ranked[0].instance_vars[2]] || 0 : 0;
+		if (best >= REVERSE_WIN) return endMode(colourName(ranked[0]) + " WINS", 0.5);
+		if (m.time <= 0) {
+			var top = ranked.filter(function (p) { return Math.floor(m.score[p.instance_vars[2]] || 0) === Math.floor(best); });
+			return endMode(top.length === 1 ? colourName(top[0]) + " WINS" : top.map(colourName).slice(0, 2).join(" AND ") + " TIE");
+		}
+
+		// someone touching the holder takes it (not while the 3-2-1 protects them)
+		if (!holder || gvar("timeOut") !== 0) return;
+		var thief = players.filter(function (p) { return p !== holder && touching(p, holder); })[0];
+		if (thief) tagFor(thief.instance_vars[2], thief.instance_vars[2], tg);
+	}
+
+	function reverseShow(m, v) { showScores(v.score, v.on); }
 
 	// ---------- settings and the guide ----------
 	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
