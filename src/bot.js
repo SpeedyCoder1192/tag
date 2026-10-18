@@ -40,8 +40,12 @@
 		chaseable: function (m, slot) { return !!m.team && m.team[slot] !== undefined && m.team[slot] !== m.turn && !m.caught[slot]; },
 		blocksTag: function (m) { return !!m.started; }, blocksInput: teamsHold, hud: true,
 		view: teamsView, show: teamsShow, tint: teamsTint, aura: teamsAura };
-	MODES.gun = { name: "GUN GAME", start: gunStart, before: holdTimer, tick: gunTick, clock: function (m) { return m.time; }, leave: gunLeave, hud: true,
-		view: function (m) { var on = {}; on[m.lead] = true; return { score: m.kills, on: on }; }, show: function (m, v) { showScores(v.score, v.on); } };
+	MODES.gun = { name: "GUN GAME", start: gunStart, before: holdTimer, tick: gunTick, clock: function (m) { return m.time; }, leave: gunLeave,
+		input: function (m, id, what) { if (what === "down") m.down[id] = true; }, botShoot: gunBotShoot, hud: true, labels: true,
+		blocksTag: function (m, slot) { return isPayback(m, slot); },
+		chaseable: function (m, slot) { return slot !== gvar("taggerID") && !isPayback(m, slot); },
+		view: function (m) { return { level: m.level, shots: m.shots.map(function (s) { return [s.id, Math.round(s.x), Math.round(s.y), Math.round(s.vx), Math.round(s.vy), s.nade ? 1 : 0]; }) }; },
+		show: gunShow };
 	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
@@ -440,6 +444,7 @@
 			this.nextPause = clock + 1.5 + Math.random() * 2.5;
 		}
 		if (clock < this.pauseUntil) return;
+		if (isTagger) this.shoot(me, others, cfg);
 
 		if (!me.surf) return this.inAir(me, others);
 		this.air = null;
@@ -462,6 +467,15 @@
 		this.holding = false;
 		if (isTagger) this.chase(me, others, cfg);
 		else if (!this.flee(me, seen, tagger, cfg)) this.follow(me, cfg);
+	};
+
+	// Gun Game: pull the trigger (down) when the mode says someone's in the line of fire.
+	// Slower bots take longer to react to a shot lining up.
+	Bot.prototype.shoot = function (me, others, cfg) {
+		var d = mode && MODES[mode.id];
+		if (!d || !d.botShoot || clock < (this.nextShot || 0) || !d.botShoot(mode, me, others)) return;
+		input(this.id, "down");
+		this.nextShot = clock + 0.25 + cfg.react * 1.5 + Math.random() * 0.3;
 	};
 
 	Bot.prototype.plan = function (me, others, seen, isTagger, tagger, vmax, edges, cfg) {
@@ -2526,11 +2540,15 @@
 	function drawTags() {
 		var tags = [];
 		var layer = rt.getLayerByName("Players");
-		if (layer && rt.running_layout.name !== "Menu" && prefs.tags) {
+		// P5 and P6 always get a label (P1 to P4 have the game's colours to go by), and
+		// everyone does when a mode gives several players the same colour (Gun Game)
+		var everyone = mode && MODES[mode.id] && MODES[mode.id].labels;
+		if (layer && rt.running_layout.name !== "Menu" && (prefs.tags || everyone)) {
 			var talking = talkingIds();
 			instances(T_PLAYER).forEach(function (p) {
-				var slot = p.instance_vars[2], ping = net.pings[p.instance_vars[4]], speaking = talking.indexOf(p.instance_vars[4]) >= 0;
-				var text = (slot >= 4 ? "P" + (slot + 1) : "") + (ping !== undefined ? (slot >= 4 ? " - " : "") + (ping ? ping + "ms" : "...") : "");
+				var slot = p.instance_vars[2], ping = prefs.tags ? net.pings[p.instance_vars[4]] : undefined, speaking = talking.indexOf(p.instance_vars[4]) >= 0;
+				var named = slot >= 4 || everyone;
+				var text = (named ? "P" + (slot + 1) : "") + (ping !== undefined ? (named ? " - " : "") + (ping ? ping + "ms" : "...") : "");
 				if (!text && !speaking) return;
 				// whoever's "it" has the game's arrow and countdown there, so go above that
 				var lift = slot === gvar("taggerID") ? 92 : 44;
@@ -3059,6 +3077,7 @@
 		if (!md || !mode) return;
 		mode.result = md.result;
 		mode.x = md.x;
+		mode.xAt = clock;
 		(md.booms || []).forEach(function (b) {
 			if (b[0] > mode.seenBoom) { mode.seenBoom = b[0]; if (b[3]) starsAt(b[1], b[2], b[3]); else boomAt(b[1], b[2], false); }
 		});
@@ -3692,6 +3711,9 @@
 			if (this.name === "EffectsFG" && mode && mode.id === "blackout" && mode.layout === rt.running_layout) {
 				try { drawDark(this, glw); } catch (e) {}
 			}
+			if (this.name === "Players" && mode && mode.id === "gun" && mode.layout === rt.running_layout) {
+				try { drawShots(glw); } catch (e) {}
+			}
 			return r;
 		};
 	})();
@@ -3821,51 +3843,6 @@
 		endMode(win < 0 ? "IT'S A TIE" : TEAM_NAMES[win] + " WINS", 1);
 	}
 
-	// ---- gun game ----
-	// Classic tag, but every catch moves your colour one step along the palette
-	// (skipping colours someone else has). Make GUN_WIN catches to win, or have the
-	// most when the round timer runs out. Everyone gets their own colour back after.
-
-	var GUN_WIN = 6;
-
-	function gunStart(m) {
-		m.time = gvar("timer") || 200;
-		m.kills = {};
-		m.orig = JSON.parse(JSON.stringify(paints));
-		m.live = false;
-	}
-
-	function gunTick(m, dt) {
-		var players = instances(T_PLAYER), tg = gvar("taggerID");
-		m.time = Math.max(0, m.time - dt);
-		// the game picks its first tagger as the level starts: that's not a catch
-		if (gvar("timeOut") === 0) m.live = true;
-		if (m.live && m.tagger !== undefined && tg !== m.tagger) {
-			var by = players.filter(function (p) { return p.instance_vars[2] === m.tagger; })[0];
-			if (by) {
-				var id = by.instance_vars[4];
-				m.kills[m.tagger] = (m.kills[m.tagger] || 0) + 1;
-				paints[id] = nextFreeColour(paintOf(id, by.instance_vars[5]), 1, id);
-				starsAt(by.x, by.y, 8);
-				if (m.kills[m.tagger] >= GUN_WIN) return endMode(colourName(by) + " WINS", 0.8);
-			}
-		}
-		m.tagger = tg;
-
-		var ranked = players.slice().sort(function (a, b) { return (m.kills[b.instance_vars[2]] || 0) - (m.kills[a.instance_vars[2]] || 0); });
-		var best = ranked[0] ? m.kills[ranked[0].instance_vars[2]] || 0 : 0;
-		m.lead = best ? ranked[0].instance_vars[2] : -1;
-		if (m.time <= 0) {
-			var top = ranked.filter(function (p) { return (m.kills[p.instance_vars[2]] || 0) === best; });
-			endMode(!best ? "NOBODY SCORED" : top.length === 1 ? colourName(top[0]) + " WINS" : top.map(colourName).slice(0, 2).join(" AND ") + " TIE");
-		}
-	}
-
-	// Back in the menu: everyone's own colour again.
-	function gunLeave(m) {
-		Object.keys(m.orig).forEach(function (id) { if (paints[id] !== undefined) paints[id] = m.orig[id]; });
-	}
-
 	// Everyone back to the start, free again, and the other side chases: one of them
 	// becomes it, so they all wait out the game's 3-2-1 while the runners scatter.
 	function nextTurn(m, players) {
@@ -3915,6 +3892,245 @@
 		if (hillHud.__h !== html) { hillHud.__h = html; hillHud.innerHTML = html; }
 		hillHud.style.display = "block";
 		placeOver(hillHud);
+	}
+
+	// ---- gun game ----
+	// Everyone starts red, and every catch moves you one colour along the palette (red,
+	// orange, yellow ... black). A catch while you're black takes you back to your own
+	// colour, and that wins. Whoever's it can also shoot by pressing down (no new keys:
+	// down only drops through thin platforms), and the gun gets harder to use the
+	// further along you are: a rifle, a shotgun, a lobbed grenade, a pistol, and on
+	// black just your hands. You can't catch whoever just caught you (by touch or by
+	// shot), so two players can't farm each other: go after someone else. Everyone gets
+	// a P1, P2... label, since colours are shared.
+
+	var GUNS = [
+		{ name: "RIFLE", reload: 0.6, speed: 950, range: 650, spread: [0] },
+		{ name: "SHOTGUN", reload: 1.0, speed: 800, range: 260, spread: [-0.17, 0, 0.17] },
+		{ name: "GRENADE", reload: 1.5, lob: true },
+		{ name: "PISTOL", reload: 1.3, speed: 650, range: 420, spread: [0] },
+		{ name: "HANDS" }
+	];
+	var GUN_LEVELS = 16;   // red to black, the palette's order
+	var NADE = { vx: 430, vy: -480, g: 1400, fuse: 0.9, radius: 80 };
+	var SHOT_BOX = { box: { l: -2, r: 2, t: -2, b: 2 } };
+
+	function gunOf(level) { return GUNS[level >= GUN_LEVELS - 1 ? 4 : Math.floor(level / 4)]; }
+
+	function gunStart(m) {
+		m.time = gvar("timer") || 200;
+		m.level = {};
+		m.orig = {};
+		m.down = {}; m.downBefore = {};
+		m.reload = {};
+		m.shots = []; m.shotSeq = 0;
+		m.live = false;
+		m.w = buildWorld();
+	}
+
+	function bySlot(players, slot) { return players.filter(function (p) { return p.instance_vars[2] === slot; })[0]; }
+
+	function gunTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		// everyone wears their place along the palette (their own colour is kept for the end)
+		players.forEach(function (p) {
+			var id = p.instance_vars[4];
+			if (m.orig[id] === undefined) m.orig[id] = paintOf(id, p.instance_vars[5]);
+			paints[id] = Math.min(m.level[p.instance_vars[2]] || 0, GUN_LEVELS - 1);
+		});
+
+		// the game picks its first tagger as the level starts: that's not a catch
+		if (gvar("timeOut") === 0) m.live = true;
+		if (m.live && m.tagger !== undefined && tg !== m.tagger && gunCatch(m, players, m.tagger, tg)) return;
+		m.tagger = tg;
+
+		var it = bySlot(players, tg);
+		if (it && gvar("timeOut") === 0) {
+			var id = it.instance_vars[4], gun = gunOf(m.level[tg] || 0);
+			if (m.down[id] && !m.downBefore[id] && gun.reload && clock >= (m.reload[tg] || 0)) fire(m, it, gun);
+		}
+		m.downBefore = m.down;
+		m.down = {};
+		moveShots(m, dt, players, tg);
+
+		if (m.time <= 0) {
+			var best = Math.max.apply(null, players.map(function (p) { return m.level[p.instance_vars[2]] || 0; }).concat(0));
+			var top = players.filter(function (p) { return (m.level[p.instance_vars[2]] || 0) === best; });
+			endMode(!best ? "NOBODY SCORED" : top.length === 1 ? "P" + (top[0].instance_vars[2] + 1) + " WINS" :
+				top.slice(0, 2).map(function (p) { return "P" + (p.instance_vars[2] + 1); }).join(" AND ") + " TIE");
+		}
+	}
+
+	// Whoever's it can't catch the one who just caught them.
+	function isPayback(m, slot) {
+		return !!m.last && m.last.by === slot && m.last.victim === gvar("taggerID");
+	}
+
+	// `by` caught `victim`: one colour on. Returns true when it wins.
+	function gunCatch(m, players, by, victim) {
+		var p = bySlot(players, by);
+		m.last = { by: by, victim: victim };
+		if (!p) return false;
+		var level = m.level[by] || 0;
+		starsAt(p.x, p.y, 8);
+		if (level < GUN_LEVELS - 1) { m.level[by] = level + 1; return false; }
+		m.level[by] = GUN_LEVELS;
+		paints[p.instance_vars[4]] = m.orig[p.instance_vars[4]];
+		endMode("P" + (by + 1) + " WINS", 1);
+		return true;
+	}
+
+	function fire(m, p, gun) {
+		var slot = p.instance_vars[2], face = p.instance_vars[3] || 1, x = p.x + face * 16, y = p.y - 2;
+		m.reload[slot] = clock + gun.reload;
+		if (gun.lob) m.shots.push({ id: ++m.shotSeq, by: slot, x: x, y: y - 6, vx: face * NADE.vx + p.behavior_insts[0].dx * 0.4, vy: NADE.vy, t: 0, nade: true });
+		else gun.spread.forEach(function (a) {
+			m.shots.push({ id: ++m.shotSeq, by: slot, x: x, y: y, vx: face * gun.speed * Math.cos(a), vy: gun.speed * Math.sin(a), left: gun.range });
+		});
+		gunSound(gun.lob ? "throw" : "shot");
+	}
+
+	function solidAt(w, x, y) {
+		for (var i = 0; i < w.solids.length; i++) if (hits(SHOT_BOX, x, y, w.solids[i])) return true;
+		return false;
+	}
+
+	// Bullets fly straight until they hit a wall, run out of range or catch someone.
+	// Grenades arc, bounce, and go off after a moment, catching whoever's nearest.
+	// Only whoever's still it has live shots: the rest vanish once they're caught.
+	function moveShots(m, dt, players, tg) {
+		var h = dt / 2;
+		function target(s, reach) {
+			var best = null, bestD = reach;
+			players.forEach(function (p) {
+				if (p.instance_vars[2] === s.by || mw.active[p.instance_vars[4]] || isPayback(m, p.instance_vars[2])) return;
+				var d = Math.max(Math.abs(p.x - s.x) - 16, Math.abs(p.y - s.y) - 16);
+				if (d < bestD) { bestD = d; best = p; }
+			});
+			return best;
+		}
+		m.shots = m.shots.filter(function (s) {
+			if (s.by !== tg) return false;
+			for (var k = 0; k < 2; k++) {
+				if (s.nade) s.vy += NADE.g * h;
+				var nx = s.x + s.vx * h, ny = s.y + s.vy * h;
+				if (m.w && solidAt(m.w, nx, ny)) {
+					if (!s.nade) return false;
+					if (solidAt(m.w, nx, s.y)) s.vx *= -0.5; else { s.vy *= -0.45; s.vx *= 0.8; }
+					continue;
+				}
+				s.x = nx; s.y = ny;
+				if (s.nade) continue;
+				s.left -= Math.abs(s.vx * h) + Math.abs(s.vy * h);
+				var hit = target(s, 2);
+				if (hit) { shotCatch(m, s.by, hit); return false; }
+				if (s.left <= 0) return false;
+			}
+			if (!s.nade) return true;
+			s.t += dt;
+			if (s.t < NADE.fuse && s.y < rt.running_layout.height + 200) return true;
+			starsAt(s.x, s.y, 12);
+			shakeScreen(8, 0.25);
+			gunSound("boom");
+			var caught = target(s, NADE.radius);
+			if (caught) shotCatch(m, s.by, caught);
+			return false;
+		});
+	}
+
+	function shotCatch(m, by, victim) {
+		if (gvar("timeOut") !== 0) return;
+		m.shots = [];
+		tagFor(by, victim.instance_vars[2], victim.instance_vars[2]);
+	}
+
+	// A bot that's it fires when someone's in the line of fire (or in throwing range).
+	function gunBotShoot(m, me, others) {
+		var p = bySlot(instances(T_PLAYER), me.slot), gun = gunOf(m.level[me.slot] || 0);
+		if (!p || !gun.reload || clock < (m.reload[me.slot] || 0) || gvar("timeOut") !== 0) return false;
+		var face = p.instance_vars[3] || 1;
+		return others.some(function (o) {
+			if (isPayback(m, o.slot)) return false;
+			var ahead = (o.x - me.x) * face, dy = o.y - me.y;
+			if (gun.lob) return ahead > 100 && ahead < 360 && Math.abs(dy) < 100;
+			return ahead > 0 && ahead < gun.range * 0.85 && Math.abs(dy) < (gun.spread.length > 1 ? 45 : 18);
+		});
+	}
+
+	function gunLeave(m) {
+		Object.keys(m.orig).forEach(function (id) { if (paints[id] !== undefined) paints[id] = m.orig[id]; });
+	}
+
+	// Short bursts of noise for the guns, made once.
+	var gunSfx = {};
+	function gunSound(kind) {
+		if (!fb.audio) return;
+		if (!gunSfx[kind]) {
+			var a = fb.audio, len = kind === "boom" ? 0.4 : 0.14, b = a.createBuffer(1, Math.floor(a.sampleRate * len), a.sampleRate), d = b.getChannelData(0);
+			var fade = { shot: 38, throw: 60, boom: 8 }[kind], loud = { shot: 0.5, throw: 0.15, boom: 0.7 }[kind];
+			for (var i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / a.sampleRate * fade) * loud;
+			gunSfx[kind] = b;
+		}
+		playSound(gunSfx[kind], 0);
+	}
+
+	// Everyone's place in the corner (furthest along first) with the gun they're on,
+	// and the shots to draw. Friends hear the shots they're sent.
+	var gunDraw = { shots: [], at: 0, seen: 0 };
+	function gunShow(m, v) {
+		var players = instances(T_PLAYER), level = v.level || {};
+		gunDraw.shots = v.shots || [];
+		gunDraw.at = net.role === "guest" ? mode.xAt || clock : clock;
+		if (net.role === "guest") gunDraw.shots.forEach(function (s) {
+			if (s[0] > gunDraw.seen) { gunDraw.seen = s[0]; gunSound(s[5] ? "throw" : "shot"); }
+		});
+		var rows = players.slice().sort(function (a, b) { return (level[b.instance_vars[2]] || 0) - (level[a.instance_vars[2]] || 0); });
+		var html = rows.map(function (p) {
+			var slot = p.instance_vars[2], lv = level[slot] || 0, idx = paintOf(p.instance_vars[4], p.instance_vars[5]);
+			var rgb = palette && palette.rgb ? palette.rgb[idx].join(",") : "255,255,255";
+			return '<div class="hh-row"><b class="hh-sw" style="background:rgb(' + rgb + ')"></b>' +
+				px("P" + (slot + 1) + " " + Math.min(lv, GUN_LEVELS) + " " + gunOf(lv).name, 2) + "</div>";
+		}).join("");
+		if (hillHud.__h !== html) { hillHud.__h = html; hillHud.innerHTML = html; }
+		hillHud.style.display = "block";
+		placeOver(hillHud);
+	}
+
+	var shotTex = {};
+	function drawShots(glw) {
+		if (!shotTex.bullet) {
+			// a tracer: a fading tail up to a hot head (drawn along the bullet's path)
+			var c = document.createElement("canvas"), g = c.getContext("2d");
+			c.width = 32; c.height = 8;
+			var tail = g.createLinearGradient(0, 0, 32, 0);
+			tail.addColorStop(0, "rgba(255,140,30,0)");
+			tail.addColorStop(0.7, "rgba(255,190,60,0.9)");
+			tail.addColorStop(1, "#fffbe0");
+			g.fillStyle = tail;
+			g.beginPath(); g.moveTo(0, 4); g.lineTo(26, 0.5); g.arc(28, 4, 3.5, -Math.PI / 2, Math.PI / 2); g.lineTo(0, 4); g.fill();
+			shotTex.bullet = glw.loadTexture(c, false, true);
+			var n = document.createElement("canvas"), h = n.getContext("2d");
+			n.width = n.height = 14;
+			h.fillStyle = "#1c2e12"; h.beginPath(); h.arc(7, 7, 7, 0, Math.PI * 2); h.fill();
+			h.fillStyle = "#4f8a33"; h.beginPath(); h.arc(7, 7, 5, 0, Math.PI * 2); h.fill();
+			h.fillStyle = "#ffe14d"; h.fillRect(6, 0, 3, 3);
+			shotTex.nade = glw.loadTexture(n, false, true);
+		}
+		var ahead = net.role === "guest" ? Math.min(0.1, clock - gunDraw.at) : 0;
+		glw.setOpacity(1);
+		gunDraw.shots.forEach(function (s) {
+			var x = s[1] + s[3] * ahead, y = s[2] + s[4] * ahead;
+			if (s[5]) {
+				glw.setTexture(shotTex.nade);
+				glw.quadTex(x - 7, y - 7, x + 7, y - 7, x + 7, y + 7, x - 7, y + 7, FULL_UV);
+				return;
+			}
+			var len = Math.sqrt(s[3] * s[3] + s[4] * s[4]) || 1, ux = s[3] / len, uy = s[4] / len, nx = -uy * 4, ny = ux * 4;
+			var bx = x - ux * 28, by = y - uy * 28, fx = x + ux * 4, fy = y + uy * 4;
+			glw.setTexture(shotTex.bullet);
+			glw.quadTex(bx + nx, by + ny, fx + nx, fy + ny, fx - nx, fy - ny, bx - nx, by - ny, FULL_UV);
+		});
 	}
 
 	// ---------- settings and the guide ----------
