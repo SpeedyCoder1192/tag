@@ -34,7 +34,8 @@
 		blocksTag: function (m) { return !!m.started; },
 		view: function (m) { var on = {}; on[gvar("taggerID")] = true; return { score: m.score, on: on }; }, show: reverseShow,
 		aura: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? "gold" : null; } };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse"];
+	MODES.blackout = { name: "BLACKOUT", show: blackoutShow, sees: blackoutSees };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -411,13 +412,20 @@
 	};
 
 	Bot.prototype.tick = function (me, all, cfg) {
-		var seen = perceived(cfg.react);
+		var seen = perceived(cfg.react).filter(function (p) { return p.slot === me.slot || modeSees(me, p); });
 		// the chaser to run from (the nearest one, when a mode has several)
 		var tagger = threatFor(me, seen);
 		var isTagger = isChaser(me.slot);
 		var vmax = this.vmax = (me.slot === gvar("taggerID") ? 450 : 400) * (cfg.boost || 1);
 		var others = seen.filter(function (p) { return p.slot !== me.slot && (!isTagger || isChaseable(p.slot)); });
-		if (!others.length) return;
+		if (others.length) this.wandering = false;
+		else {
+			// nobody in sight (Blackout): a tagger goes looking
+			if (!isTagger) return;
+			if (!me.surf) return this.inAir(me, others);
+			this.air = null;
+			return this.wander(me, cfg);
+		}
 
 		// easy/medium bots zone out now and then
 		if (cfg.hesitate > 0 && clock >= this.nextPause) {
@@ -603,6 +611,26 @@
 		if (Math.abs(me.x - mid) > half) return this.walkTo(me, mid);
 		if (e.kind === "drop") { input(this.id, "down"); this.air = e; return; }
 		if (Math.abs(me.dx) < 60) this.tryJump(cfg, e);
+	};
+
+	// Head somewhere random on the map, picking somewhere new on arrival or after a while.
+	Bot.prototype.wander = function (me, cfg) {
+		var arrived = this.goal && this.goal.surf === me.surf && Math.abs(this.goal.x - me.x) < 12;
+		if (!this.wandering || !this.goal || arrived || clock > this.wanderUntil) {
+			this.wandering = true;
+			var mine = dijkstra(graphFor(this.vmax), me.surf, me.x, this.vmax);
+			var options = world.surfaces.filter(function (s) { return s !== me.surf && mine.dist[s.id] < Infinity; });
+			if (!options.length) return;
+			var s = options[Math.floor(Math.random() * options.length)];
+			this.paths = mine;
+			this.goal = { surf: s, x: (s.l + s.r) / 2 };
+			this.edge = mine.first[s.id] || null;
+			this.runup = false;
+			this.jumpDelay = -1;
+			this.wanderUntil = clock + 6;
+			this.planSurf = me.surf;
+		}
+		this.follow(me, cfg);
 	};
 
 	Bot.prototype.tryJump = function (cfg, e) {
@@ -2941,6 +2969,12 @@
 		return !!(p && d.blocksInput(mode, p.instance_vars[2]));
 	}
 
+	// Whether a bot can see another player (Blackout: only nearby ones, unless the map's lit up).
+	function modeSees(me, p) {
+		var d = mode && MODES[mode.id];
+		return !d || !d.sees || d.sees(mode, me, p);
+	}
+
 	// Seconds of head start a tagger bot gives someone it would rather catch (King of the Hill: whoever's on the hill).
 	function modeChaseBonus(slot) {
 		var d = mode && MODES[mode.id];
@@ -3605,6 +3639,71 @@
 	}
 
 	function reverseShow(m, v) { showScores(v.score, v.on); }
+
+	// ---- blackout ----
+	// Classic tag in the dark: just a soft light around each player. Every tag lights
+	// the whole map for a moment, and a flashbang lights it up completely. Bots only
+	// see players near them (or everyone, while the lights are up). The darkness is
+	// drawn with the game's layers, under the HUD, so the timer and arrows still show.
+
+	var DARK = 0.94, LIGHT_R = 120, BOT_SIGHT = 300;
+	var dark = { canvas: null, ctx: null, tex: null, light: 0, lastTg: null, last: 0 };
+
+	function blackoutShow(m) {
+		var tg = net.role === "guest" ? net.host && net.host.tg : gvar("taggerID");
+		if (dark.lastTg !== null && tg !== dark.lastTg) dark.light = Math.max(dark.light, 0.8);
+		dark.lastTg = tg;
+		if (fb.list.length) dark.light = 1;
+		var now = performance.now() / 1000;
+		dark.light = Math.max(0, dark.light - (now - (dark.last || now)) / 1.4);
+		dark.last = now;
+	}
+
+	function blackoutSees(m, me, p) {
+		return dark.light > 0.3 || Math.abs(p.x - me.x) + Math.abs(p.y - me.y) < BOT_SIGHT;
+	}
+
+	(function () {
+		var drawLayer = cr.layer.prototype.drawGL;
+		cr.layer.prototype.drawGL = function (glw) {
+			var r = drawLayer.apply(this, arguments);
+			if (this.name === "EffectsFG" && mode && mode.id === "blackout" && mode.layout === rt.running_layout) {
+				try { drawDark(this, glw); } catch (e) {}
+			}
+			return r;
+		};
+	})();
+
+	function drawDark(layer, glw) {
+		var W = 320, H = 180;
+		if (!dark.canvas) {
+			dark.canvas = document.createElement("canvas");
+			dark.canvas.width = W;
+			dark.canvas.height = H;
+			dark.ctx = dark.canvas.getContext("2d");
+		}
+		var g = dark.ctx, vl = layer.viewLeft, vt = layer.viewTop, vw = layer.viewRight - vl, vh = layer.viewBottom - vt;
+		g.globalCompositeOperation = "copy";
+		g.fillStyle = "rgba(0,0,0," + (DARK * (1 - dark.light)).toFixed(3) + ")";
+		g.fillRect(0, 0, W, H);
+		g.globalCompositeOperation = "destination-out";
+		instances(T_VISUAL).forEach(function (v) {
+			var x = (v.x - vl) / vw * W, y = (v.y - 17 - vt) / vh * H, rx = LIGHT_R / vw * W;
+			var grad = g.createRadialGradient(x, y, 0, x, y, rx);
+			grad.addColorStop(0, "rgba(0,0,0,1)");
+			grad.addColorStop(0.55, "rgba(0,0,0,0.85)");
+			grad.addColorStop(1, "rgba(0,0,0,0)");
+			g.fillStyle = grad;
+			g.beginPath();
+			g.arc(x, y, rx, 0, Math.PI * 2);   // the canvas has the view's shape, so circles stay round
+			g.fill();
+		});
+		if (!dark.tex) dark.tex = glw.loadTexture(dark.canvas, false, true);
+		else glw.videoToTexture(dark.canvas, dark.tex, false);
+		glw.setTexture(dark.tex);
+		glw.setOpacity(1);
+		glw.quadTex(vl, vt, vl + vw, vt, vl + vw, vt + vh, vl, vt + vh, FULL_UV);
+	}
 
 	// ---------- settings and the guide ----------
 	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
