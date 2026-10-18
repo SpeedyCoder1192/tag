@@ -26,7 +26,10 @@
 			airJumps: function (m, slot) { return slot === gvar("taggerID") ? 2 : 0; }, show: juggShow,
 			scale: function (m, v, slot) { return slot === (net.role === "guest" ? net.host && net.host.tg : gvar("taggerID")) ? JUGG_SIZE : 1; } }
 	};
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut"];
+	MODES.hill = { name: "KING OF THE HILL", start: hillStart, before: holdTimer, tick: hillTick, clock: function (m) { return m.time; },
+		rescue: hillGoal, chaseBonus: function (m, slot) { return m.on && m.on[slot] ? 1 : 0; },
+		view: function (m) { return { hill: m.hill ? floorKey(m.hill.inst) : "", score: m.score, on: m.on }; }, show: hillShow };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -453,7 +456,7 @@
 			others.forEach(function (p) {
 				var land = landingOf(p, cfg.predict);
 				if (!land) return;
-				var t = timeTo(mine, land.surf, land.x);
+				var t = timeTo(mine, land.surf, land.x) - modeChaseBonus(p.slot);
 				if (self.randomTarget) t = Math.random();
 				if (p.slot === self.target) current = { land: land, t: t };
 				if (t < bestT) { bestT = t; best = { p: p, land: land }; }
@@ -1136,7 +1139,7 @@
 	function setupPalette() {
 		var p = window.TAG_MEDIA && window.TAG_MEDIA.palette;
 		if (!p) return;
-		palette = { names: p.names, sheets: [], boxes: [], tex: {} };
+		palette = { names: p.names, rgb: p.rgb, sheets: [], boxes: [], tex: {} };
 		p.sheets.forEach(function (src, i) { var im = new Image(); im.src = src; palette.sheets[i] = im; });
 		p.boxes.forEach(function (src, i) { var im = new Image(); im.src = src; palette.boxes[i] = im; });
 	}
@@ -2931,6 +2934,12 @@
 		return !!(p && d.blocksInput(mode, p.instance_vars[2]));
 	}
 
+	// Seconds of head start a tagger bot gives someone it would rather catch (King of the Hill: whoever's on the hill).
+	function modeChaseBonus(slot) {
+		var d = mode && MODES[mode.id];
+		return d && d.chaseBonus ? d.chaseBonus(mode, slot) : 0;
+	}
+
 	// Extra jumps in the air a mode gives someone, beyond their normal one.
 	function modeAirJumps(slot) {
 		var d = mode && MODES[mode.id];
@@ -2970,7 +2979,7 @@
 	}
 
 	function modeAfter() {
-		if (!inLevel()) { mode = null; drawModeResult(); return; }
+		if (!inLevel()) { mode = null; drawModeResult(); hideHillHud(); return; }
 		if (!mode || mode.layout !== rt.running_layout) {
 			if (gvar("gameState") !== "Game") return;
 			startMode();
@@ -2981,6 +2990,7 @@
 			if (def.clock) showClock(def.clock(mode));
 		}
 		if (def.show) def.show(mode, modeShown());
+		if (def.show !== hillShow) hideHillHud();
 		drawModeResult();
 	}
 
@@ -3416,6 +3426,136 @@
 		return Math.abs(r.x - it.x) < half && Math.abs(r.y - bigMiddle) < half;
 	}
 
+	// ---- king of the hill ----
+	// One platform glows: standing on it scores a point a second (split between
+	// everyone sharing it), but not while you're it. The hill moves to another platform every 20 seconds. First to 45 points
+	// wins, or whoever has most when the round timer runs out.
+
+	var HILL_MOVE = 20, HILL_WIN = 45;
+
+	function hillStart(m) {
+		m.time = gvar("timer") || 200;
+		m.score = {};
+		m.on = {};
+		m.hill = null;
+		m.moveAt = 0;
+	}
+
+	// Platforms worth standing on: fairly level, a decent size, not the floor across
+	// the whole level.
+	function hillChoices() {
+		if (!world) return [];
+		var wide = rt.running_layout.width * 0.6;
+		return world.surfaces.filter(function (s) {
+			return s.r - s.l >= 90 && s.r - s.l < wide && Math.abs(s.rect.slope) < 0.25 && s.top > 80;
+		});
+	}
+
+	function hillTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		if (!m.hill || clock >= m.moveAt) {
+			var choices = hillChoices().filter(function (s) { return !m.hill || s.rect.inst !== m.hill.inst; });
+			if (choices.length) {
+				var s = choices[Math.floor(Math.random() * choices.length)];
+				m.hill = { inst: s.rect.inst, surf: s };
+			}
+			m.moveAt = clock + HILL_MOVE;
+		}
+		m.on = {};
+		var kings = players.filter(function (p) {
+			var plat = p.behavior_insts[0];
+			if (!m.hill || plat.lastFloorObject !== m.hill.inst || !plat.isOnFloor()) return false;
+			m.on[p.instance_vars[2]] = true;
+			return p.instance_vars[2] !== tg;
+		});
+		// sharing the hill shares the points: holding it alone is what pays
+		if (gvar("timeOut") === 0) kings.forEach(function (p) {
+			var slot = p.instance_vars[2];
+			m.score[slot] = (m.score[slot] || 0) + dt / kings.length;
+		});
+		var ranked = players.slice().sort(function (a, b) { return (m.score[b.instance_vars[2]] || 0) - (m.score[a.instance_vars[2]] || 0); });
+		var top = ranked[0], best = top ? m.score[top.instance_vars[2]] || 0 : 0;
+		if (top && best >= HILL_WIN) return endMode(colourName(top) + " IS KING", 0.5);
+		if (m.time <= 0) {
+			var kings = ranked.filter(function (p) { return Math.floor(m.score[p.instance_vars[2]] || 0) === Math.floor(best); });
+			endMode(Math.floor(best) < 1 ? "NOBODY HELD THE HILL" : kings.length === 1 ? colourName(kings[0]) + " IS KING" :
+				kings.map(colourName).slice(0, 2).join(" AND ") + " SHARE THE HILL");
+		}
+	}
+
+	// Runner bots head for the hill when the tagger isn't close to it.
+	function hillGoal(m, me, seen, threat) {
+		if (!m.hill || !world || !world.byInst.get(m.hill.inst)) return null;
+		var s = world.byInst.get(m.hill.inst), x = (s.l + s.r) / 2;
+		if (threat && Math.abs(threat.x - x) + Math.abs(threat.y - s.top) < 200) return null;
+		return { surf: s, x: me.surf === s ? Math.max(s.l + 10, Math.min(s.r - 10, me.x)) : x, y: s.top, dx: 0, dy: 0 };
+	}
+
+	// The scores in the corner, and which platform glows (for friends too).
+	var hillHud = document.createElement("div");
+	hillHud.id = "hillHud";
+	function hillShow(m, v) {
+		hillGlow.key = v.hill || "";
+		hillGlow.inst = null;
+		if (hillGlow.key) {
+			if (net.role === "guest") {
+				if (!floors || floors.layout !== rt.running_layout) floors = buildFloors();
+				hillGlow.inst = floors.map.get(hillGlow.key) || null;
+			} else hillGlow.inst = m.hill && m.hill.inst;
+		}
+		var players = instances(T_PLAYER), score = v.score || {};
+		var rows = players.map(function (p) { return { p: p, pts: Math.floor(score[p.instance_vars[2]] || 0) }; })
+			.sort(function (a, b) { return b.pts - a.pts; });
+		var html = rows.map(function (r) {
+			var idx = paintOf(r.p.instance_vars[4], r.p.instance_vars[5]), rgb = palette && palette.rgb ? palette.rgb[idx].join(",") : "255,255,255";
+			var on = (v.on || {})[r.p.instance_vars[2]];
+			return '<div class="hh-row' + (on ? " on" : "") + '"><b class="hh-sw" style="background:rgb(' + rgb + ')"></b>' + px(String(r.pts), 2) + "</div>";
+		}).join("");
+		if (hillHud.__h !== html) { hillHud.__h = html; hillHud.innerHTML = html; }
+		hillHud.style.display = "block";
+		placeOver(hillHud);
+	}
+
+	function hideHillHud() {
+		hillHud.style.display = "none";
+		hillGlow.inst = null;
+	}
+
+	// The hill's glow, drawn with the platform: a gold wash and light rising off the top.
+	var hillGlow = { inst: null, key: "", tex: null, wash: null };
+	(function () {
+		var proto = cr.plugins_.TiledBg.prototype.Instance.prototype, drawGL = proto.drawGL;
+		proto.drawGL = function (glw) {
+			drawGL.call(this, glw);
+			if (this !== hillGlow.inst) return;
+			try {
+				if (!hillGlow.tex) {
+					var c = document.createElement("canvas"), g = c.getContext("2d");
+					c.width = 4; c.height = 64;
+					var grad = g.createLinearGradient(0, 0, 0, 64);
+					grad.addColorStop(0, "rgba(255,215,60,0)");
+					grad.addColorStop(1, "rgba(255,215,60,0.85)");
+					g.fillStyle = grad;
+					g.fillRect(0, 0, 4, 64);
+					hillGlow.tex = glw.loadTexture(c, false, true);
+					var w = document.createElement("canvas");
+					w.width = w.height = 4;
+					w.getContext("2d").fillStyle = "rgb(255,205,40)";
+					w.getContext("2d").fillRect(0, 0, 4, 4);
+					hillGlow.wash = glw.loadTexture(w, false, true);
+				}
+				var q = this.bquad, pulse = 0.75 + 0.25 * Math.sin(clock * 4), up = 46;
+				glw.setTexture(hillGlow.wash);
+				glw.setOpacity(0.45 * pulse);
+				glw.quadTex(q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly, FULL_UV);
+				glw.setTexture(hillGlow.tex);
+				glw.setOpacity(pulse);
+				glw.quadTex(q.tlx, q.tly - up, q.trx, q.try_ - up, q.trx, q.try_, q.tlx, q.tly, FULL_UV);
+			} catch (e) {}
+		};
+	})();
+
 	// ---------- settings and the guide ----------
 	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
 	// everything (with keyboard and touch versions of the controls), the gear opens
@@ -3696,8 +3836,12 @@
 
 	var modalStyle = document.createElement("style");
 	modalStyle.textContent =
-		"#tagCorner,#tagModal,#extraSlots,#modeResult{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
+		"#tagCorner,#tagModal,#extraSlots,#modeResult,#hillHud{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
 		"#extraSlots{z-index:9;display:none}" +
+		"#hillHud{z-index:11;display:none}#hillHud .hh-row{position:relative;display:flex;align-items:center;gap:8px;margin:0 0 6px 14px;opacity:.75}" +
+		"#hillHud .hh-row:first-child{margin-top:14px}#hillHud .hh-row.on{opacity:1}" +
+		"#hillHud .hh-sw{display:block;width:18px;height:18px;border-radius:4px;box-shadow:0 0 0 2px #fff,0 0 0 4px #000}" +
+		"#hillHud .hh-row.on .hh-sw{box-shadow:0 0 0 2px #ffd23c,0 0 0 4px #000,0 0 10px 4px rgba(255,210,60,.7)}" +
 		"#modeResult{z-index:12;display:none}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}" +
 		"#extraSlots .xs{position:absolute;top:" + (SLOT_Y - 45) + "px;width:152px;height:90px;display:flex;align-items:center;justify-content:center;image-rendering:pixelated}" +
 		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
@@ -3790,6 +3934,7 @@
 	document.body.appendChild(cornerButtons);
 	document.body.appendChild(extraSlots);
 	document.body.appendChild(modeResult);
+	document.body.appendChild(hillHud);
 	document.body.appendChild(modal.el);
 	refreshButtons();
 	renderOnline();
