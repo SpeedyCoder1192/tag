@@ -1367,7 +1367,9 @@
 	function tryMoonwalk(p, facing, forBot) {
 		var id = p.instance_vars[4], plat = p.behavior_insts[0];
 		if (mw.active[id] || (mw.ready[id] || 0) > clock) return;
-		if (p.instance_vars[2] === gvar("taggerID") || !onGround(p)) return;
+		// only runners, and not while a mode holds them still (caught, frozen)
+		var d = mode && MODES[mode.id], slot = p.instance_vars[2];
+		if (isChaser(slot) || d && d.blocksInput && d.blocksInput(mode, slot) || !onGround(p)) return;
 		if (!forBot && Math.abs(plat.dx) < 60) return;
 		p.instance_vars[3] = facing;
 		mw.active[id] = { start: clock, dir: -facing, slot: p.instance_vars[2] };
@@ -3382,7 +3384,9 @@
 
 	// Two players touching, the way the game decides a tag: their sprites overlap.
 	// (Their bodies are solid when player collision is on, so those never overlap.)
+	// Someone mid-moonwalk can't be caught, so they don't count as touching anyone.
 	function touching(a, b) {
+		if (mw.active[a.instance_vars[4]] || mw.active[b.instance_vars[4]]) return false;
 		var va = visualOf(a.instance_vars[2]), vb = visualOf(b.instance_vars[2]);
 		if (va && vb) {
 			va.update_bbox();
@@ -3458,7 +3462,7 @@
 		// smash anyone in reach (once the opening 3-2-1 is over)
 		if (gvar("timeOut") !== 0) return;
 		runners.forEach(function (r) {
-			if (r.instance_vars[2] === undefined || !juggReach(it, r)) return;
+			if (r.instance_vars[2] === undefined || mw.active[r.instance_vars[4]] || !juggReach(it, r)) return;
 			boomAt(r.x, r.y, true);
 			if (isLocal(r.instance_vars[4])) flashbang("smashed");
 			rt.DestroyInstance(r);
