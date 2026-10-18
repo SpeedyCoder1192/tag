@@ -3428,10 +3428,11 @@
 
 	// ---- king of the hill ----
 	// One platform glows: standing on it scores a point a second (split between
-	// everyone sharing it), but not while you're it. The hill moves to another platform every 20 seconds. First to 45 points
-	// wins, or whoever has most when the round timer runs out.
+	// everyone sharing it), but not while you're it. The hill moves to another
+	// platform every 20 seconds. First to 25 points wins, or whoever has most when
+	// the round timer runs out.
 
-	var HILL_MOVE = 20, HILL_WIN = 45;
+	var HILL_MOVE = 20, HILL_WIN = 25;
 
 	function hillStart(m) {
 		m.time = gvar("timer") || 200;
