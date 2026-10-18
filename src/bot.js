@@ -3903,9 +3903,10 @@
 	// also moves the catcher up. The gun gets harder to use the further along you are:
 	// a rifle, a shotgun, a lobbed grenade, a pistol, and on black just your hands. A
 	// catch while you're black takes you back to your own colour, and that wins. You
-	// can't catch whoever just caught you, so two players can't farm each other, and
-	// after being shot you can't be hit again for a moment. Everyone gets a P1, P2...
-	// label, since colours are shared.
+	// can't catch whoever just caught you, so two players can't farm each other. A hit
+	// of either kind starts the game's 3-2-1, and until it's over nobody can be caught
+	// or shot (bullets go straight through). Everyone gets a P1, P2... label, since
+	// colours are shared.
 
 	var GUNS = [
 		{ name: "RIFLE", reload: 0.6, speed: 950, range: 650, spread: [0] },
@@ -3916,7 +3917,6 @@
 	];
 	var GUN_LEVELS = 16;   // red to black, the palette's order
 	var NADE = { vx: 430, vy: -480, g: 1400, fuse: 0.9, radius: 80 };
-	var SHOT_SAFE = 1;     // seconds someone who's just been shot can't be hit again
 	var SHOT_BOX = { box: { l: -2, r: 2, t: -2, b: 2 } };
 
 	function gunOf(level) { return GUNS[level >= GUN_LEVELS - 1 ? 4 : Math.floor(level / 4)]; }
@@ -3927,7 +3927,6 @@
 		m.orig = {};
 		m.down = {}; m.downBefore = {};
 		m.reload = {};
-		m.hurt = {};
 		m.shots = []; m.shotSeq = 0;
 		m.live = false;
 		m.w = buildWorld();
@@ -4010,10 +4009,12 @@
 	function moveShots(m, dt, players) {
 		var h = dt / 2;
 		function target(s, reach) {
+			// during the 3-2-1 after any hit, nobody can be hit
+			if (gvar("timeOut") !== 0) return null;
 			var best = null, bestD = reach;
 			players.forEach(function (p) {
 				var slot = p.instance_vars[2];
-				if (slot === s.by || mw.active[p.instance_vars[4]] || (m.hurt[slot] || 0) > clock) return;
+				if (slot === s.by || mw.active[p.instance_vars[4]]) return;
 				var d = Math.max(Math.abs(p.x - s.x) - 16, Math.abs(p.y - s.y) - 16);
 				if (d < bestD) { bestD = d; best = p; }
 			});
@@ -4048,11 +4049,11 @@
 		});
 	}
 
-	// A hit: the shooter goes up a colour (winning, if that takes them past black)
-	// and whoever was shot goes down one.
+	// A hit: the shooter goes up a colour and whoever was shot goes down one, and the
+	// game's 3-2-1 starts, the same cooldown as after a catch.
 	function shotHit(m, players, by, victim) {
 		var slot = victim.instance_vars[2];
-		m.hurt[slot] = clock + SHOT_SAFE;
+		window.c2_callFunction("TimeOut", []);
 		m.level[slot] = Math.max(0, (m.level[slot] || 0) - 1);
 		starsAt(victim.x, victim.y, 6);
 		if (isLocal(victim.instance_vars[4]) && flashLevel() >= 2) flashbang("shot");
@@ -4062,10 +4063,9 @@
 	// A bot fires when someone's in the line of fire (or in throwing range).
 	function gunBotShoot(m, me, others) {
 		var p = bySlot(instances(T_PLAYER), me.slot), gun = gunOf(m.level[me.slot] || 0);
-		if (!p || !gun.reload || clock < (m.reload[me.slot] || 0)) return false;
+		if (!p || !gun.reload || clock < (m.reload[me.slot] || 0) || gvar("timeOut") !== 0) return false;
 		var face = p.instance_vars[3] || 1;
 		return others.some(function (o) {
-			if ((m.hurt[o.slot] || 0) > clock) return false;
 			var ahead = (o.x - me.x) * face, dy = o.y - me.y;
 			if (gun.lob) return ahead > 100 && ahead < 360 && Math.abs(dy) < 100;
 			return ahead > 0 && ahead < gun.range * 0.85 && Math.abs(dy) < (gun.spread.length > 1 ? 45 : 18);
