@@ -17,10 +17,10 @@
 			view: function (m) { return { infected: Object.keys(m.infected).map(Number) }; }, show: infectShow,
 			tint: function (m, v, slot) { return (v.infected || []).indexOf(slot) >= 0 ? { colour: 3, amount: 0.45 } : null; } },
 		freeze: { name: "FREEZE TAG", start: freezeStart, before: holdTimer, tick: freezeTick, clock: function (m) { return m.time; },
-			chaseable: function (m, slot) { return slot !== gvar("taggerID") && !m.frozen[slot]; },
-			blocksTag: freezeCatch, blocksInput: function (m, slot) { return !!m.frozen[slot]; }, rescue: freezeRescue,
-			view: function (m) { return { frozen: Object.keys(m.frozen).map(Number) }; },
-			tint: function (m, v, slot) { return (v.frozen || []).indexOf(slot) >= 0 ? { colour: 6, amount: 0.7 } : null; } }
+			chaser: function (m, slot) { return isFreezer(m, slot); },
+			chaseable: function (m, slot) { return !isFreezer(m, slot) && m.frozen[slot] === undefined; },
+			blocksTag: freezeCatch, blocksInput: function (m, slot) { return m.frozen[slot] !== undefined; }, rescue: freezeRescue,
+			view: freezeView, tint: freezeTint, aura: freezeAura }
 	};
 	var MODE_LIST = ["classic", "potato", "infection", "freeze"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
@@ -1235,6 +1235,7 @@
 		proto.drawGL = function (glw) {
 			if (rt && this.type === rt.types_by_index[T_VISUAL]) {
 				var look = null;
+				try { drawAura(this, glw); } catch (e) {}
 				try {
 					look = paletteLook(this);
 					drawTrail(this, glw, look ? look.tex : this.curWebGLTexture, look ? look.uv : this.curFrame.sheetTex);
@@ -2837,6 +2838,32 @@
 		return best === null ? gvar("taggerID") : best;
 	}
 
+	// A soft glow behind a player, if their mode gives them one (a canvas gradient per colour).
+	var AURAS = { blue: "60,150,255", orange: "255,110,40" }, auraTex = {};
+	function drawAura(inst, glw) {
+		var d = mode && MODES[mode.id];
+		if (!d || !d.aura) return;
+		var owner = (inst.siblings || []).filter(function (s) { return s.type === rt.types_by_index[T_PLAYER_ID]; })[0];
+		var colour = owner && d.aura(mode, modeShown(), owner.instance_vars[2]);
+		if (!colour) return;
+		if (!auraTex[colour]) {
+			var c = document.createElement("canvas"), g = c.getContext("2d");
+			c.width = c.height = 64;
+			var grad = g.createRadialGradient(32, 32, 4, 32, 32, 32);
+			grad.addColorStop(0, "rgba(" + AURAS[colour] + ",0.95)");
+			grad.addColorStop(0.45, "rgba(" + AURAS[colour] + ",0.5)");
+			grad.addColorStop(1, "rgba(" + AURAS[colour] + ",0)");
+			g.fillStyle = grad;
+			g.fillRect(0, 0, 64, 64);
+			auraTex[colour] = glw.loadTexture(c, false, true);
+		}
+		var q = inst.bquad, cx = (q.tlx + q.brx) / 2, cy = (q.tly + q.bry) / 2;
+		var r = 34 * (1 + 0.1 * Math.sin(clock * 5 + owner.instance_vars[2]));
+		glw.setTexture(auraTex[colour]);
+		glw.setOpacity(0.75 * inst.opacity);
+		glw.quadTex(cx - r, cy - r, cx + r, cy - r, cx + r, cy + r, cx - r, cy + r, FULL_UV);
+	}
+
 	// A colour to wash over a player's sprite, if their mode gives them one.
 	function modeTint(inst) {
 		var d = mode && MODES[mode.id];
@@ -3140,45 +3167,54 @@
 	// ---- freeze tag ----
 	// Whoever's it stays it. Their catches freeze people where they stand (they can't
 	// move, but still fall), with an icy tint. A runner touching a frozen player frees
-	// them, and they can't be refrozen for a moment. Freeze everyone to win; the
-	// runners win if anyone's still free when the round timer runs out.
+	// them, and they can't be refrozen for a moment. Anyone left frozen too long
+	// breaks out as a freezer, on the tagger's side (they blink just before). Freezers
+	// glow blue and free runners glow red-orange. No free runners left: the freezers
+	// win; anyone still free when the round timer runs out: the runners win.
 
-	var THAW_SAFE = 1.5;   // seconds a freed player can't be refrozen
+	var THAW_SAFE = 1.5;    // seconds a freed player can't be refrozen
+	var TURN_AFTER = 10;    // seconds frozen before they become a freezer
+	var TURN_WARN = 3;      // they blink for this long before it
 
 	function freezeStart(m) {
-		m.frozen = {};
+		m.frozen = {};      // slot -> when they were frozen
+		m.freezers = {};
 		m.safe = {};
 		m.time = gvar("timer") || 200;
+	}
+
+	function isFreezer(m, slot) { return slot === gvar("taggerID") || !!m.freezers[slot]; }
+
+	function freezePlayer(m, p) {
+		var slot = p.instance_vars[2];
+		if (isFreezer(m, slot) || m.frozen[slot] !== undefined || m.safe[slot] > clock) return;
+		m.frozen[slot] = clock;
+		p.behavior_insts[0].dx = 0;
+		starsAt(p.x, p.y, 6);
 	}
 
 	// The game's tagger touched someone: freeze them instead of passing it on.
 	function freezeCatch(m, slot) {
 		if (!m.frozen) return false;   // the game picking its first tagger, before we start
-		if (slot !== gvar("taggerID") && !m.frozen[slot] && !(m.safe[slot] > clock)) {
-			var p = instances(T_PLAYER).filter(function (i) { return i.instance_vars[2] === slot; })[0];
-			if (p) {
-				m.frozen[slot] = true;
-				p.behavior_insts[0].dx = 0;
-				starsAt(p.x, p.y, 6);
-			}
-		}
+		var p = instances(T_PLAYER).filter(function (i) { return i.instance_vars[2] === slot; })[0];
+		if (p) freezePlayer(m, p);
 		return true;
 	}
 
 	function freezeTick(m, dt) {
-		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		var players = instances(T_PLAYER);
 		m.time = Math.max(0, m.time - dt);
-		var runners = players.filter(function (p) { return p.instance_vars[2] !== tg; });
-		var free = runners.filter(function (p) { return !m.frozen[p.instance_vars[2]]; });
+		var free = players.filter(function (p) { var s = p.instance_vars[2]; return !isFreezer(m, s) && m.frozen[s] === undefined; });
 		if (!free.length) {
-			var it = players.filter(function (p) { return p.instance_vars[2] === tg; })[0];
-			return endMode((it ? colourName(it) : "THE TAGGER") + " FROZE EVERYONE", 1);
+			var it = players.filter(function (p) { return p.instance_vars[2] === gvar("taggerID"); })[0];
+			var team = Object.keys(m.freezers).length;
+			return endMode(team ? "THE FREEZERS WIN" : (it ? colourName(it) : "THE TAGGER") + " FROZE EVERYONE", 1);
 		}
 		if (m.time <= 0) return endMode("THE RUNNERS WIN");
 
 		players.forEach(function (p) {
-			var slot = p.instance_vars[2];
-			if (m.frozen[slot]) {
+			var slot = p.instance_vars[2], since = m.frozen[slot];
+			if (since !== undefined) {
 				p.behavior_insts[0].dx = 0;
 				// a free runner touching them thaws them out
 				var friend = free.filter(function (f) { return Math.abs(f.x - p.x) < 30 && Math.abs(f.y - p.y) < 30; })[0];
@@ -3186,16 +3222,43 @@
 					delete m.frozen[slot];
 					m.safe[slot] = clock + THAW_SAFE;
 					starsAt(p.x, p.y, 4);
+				} else if (clock - since >= TURN_AFTER) {
+					// nobody came: they break out on the other side
+					delete m.frozen[slot];
+					m.freezers[slot] = true;
+					starsAt(p.x, p.y, 10);
 				}
+			} else if (m.freezers[slot]) {
+				// freezers other than the tagger make their own catches
+				var prey = free.filter(function (f) { return Math.abs(f.x - p.x) < 30 && Math.abs(f.y - p.y) < 30; })[0];
+				if (prey) freezePlayer(m, prey);
 			}
 		});
+	}
+
+	function freezeView(m) {
+		var warn = Object.keys(m.frozen).filter(function (s) { return clock - m.frozen[s] > TURN_AFTER - TURN_WARN; });
+		return { frozen: Object.keys(m.frozen).map(Number), freezers: Object.keys(m.freezers).map(Number), warn: warn.map(Number) };
+	}
+
+	function freezeTint(m, v, slot) {
+		if ((v.frozen || []).indexOf(slot) < 0) return null;
+		// about to break out: the ice flickers
+		var flicker = (v.warn || []).indexOf(slot) >= 0 && Math.sin(clock * 18) > 0;
+		return { colour: 6, amount: flicker ? 0.25 : 0.7 };
+	}
+
+	function freezeAura(m, v, slot) {
+		if ((v.frozen || []).indexOf(slot) >= 0) return null;
+		var tagger = net.role === "guest" ? net.host && net.host.tg : gvar("taggerID");
+		return slot === tagger || (v.freezers || []).indexOf(slot) >= 0 ? "blue" : "orange";
 	}
 
 	// Runner bots go and free a frozen teammate when the tagger isn't close.
 	function freezeRescue(m, me, seen, threat) {
 		var best = null, bestD = Infinity;
 		seen.forEach(function (p) {
-			if (!m.frozen[p.instance_vars ? p.instance_vars[2] : p.slot]) return;
+			if (m.frozen[p.slot] === undefined) return;
 			var d = Math.abs(p.x - me.x) + Math.abs(p.y - me.y);
 			var risk = threat ? Math.abs(threat.x - p.x) + Math.abs(threat.y - p.y) : Infinity;
 			if (risk > 220 && d < bestD) { bestD = d; best = p; }
