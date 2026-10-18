@@ -40,7 +40,9 @@
 		chaseable: function (m, slot) { return !!m.team && m.team[slot] !== undefined && m.team[slot] !== m.turn && !m.caught[slot]; },
 		blocksTag: function (m) { return !!m.started; }, blocksInput: teamsHold, hud: true,
 		view: teamsView, show: teamsShow, tint: teamsTint, aura: teamsAura };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams"];
+	MODES.gun = { name: "GUN GAME", start: gunStart, before: holdTimer, tick: gunTick, clock: function (m) { return m.time; }, leave: gunLeave, hud: true,
+		view: function (m) { var on = {}; on[m.lead] = true; return { score: m.kills, on: on }; }, show: function (m, v) { showScores(v.score, v.on); } };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -3027,7 +3029,10 @@
 	}
 
 	function modeAfter() {
-		if (!inLevel()) { mode = null; drawModeResult(); hideHillHud(); return; }
+		if (!inLevel()) {
+			if (mode && MODES[mode.id].leave && net.role !== "guest") MODES[mode.id].leave(mode);
+			mode = null; drawModeResult(); hideHillHud(); return;
+		}
 		if (!mode || mode.layout !== rt.running_layout) {
 			if (gvar("gameState") !== "Game") return;
 			startMode();
@@ -3814,6 +3819,51 @@
 		else if (a.all !== b.all) win = a.all ? m.first : 1 - m.first;
 		else win = a.n / a.of === b.n / b.of ? -1 : a.n / a.of > b.n / b.of ? m.first : 1 - m.first;
 		endMode(win < 0 ? "IT'S A TIE" : TEAM_NAMES[win] + " WINS", 1);
+	}
+
+	// ---- gun game ----
+	// Classic tag, but every catch moves your colour one step along the palette
+	// (skipping colours someone else has). Make GUN_WIN catches to win, or have the
+	// most when the round timer runs out. Everyone gets their own colour back after.
+
+	var GUN_WIN = 6;
+
+	function gunStart(m) {
+		m.time = gvar("timer") || 200;
+		m.kills = {};
+		m.orig = JSON.parse(JSON.stringify(paints));
+		m.live = false;
+	}
+
+	function gunTick(m, dt) {
+		var players = instances(T_PLAYER), tg = gvar("taggerID");
+		m.time = Math.max(0, m.time - dt);
+		// the game picks its first tagger as the level starts: that's not a catch
+		if (gvar("timeOut") === 0) m.live = true;
+		if (m.live && m.tagger !== undefined && tg !== m.tagger) {
+			var by = players.filter(function (p) { return p.instance_vars[2] === m.tagger; })[0];
+			if (by) {
+				var id = by.instance_vars[4];
+				m.kills[m.tagger] = (m.kills[m.tagger] || 0) + 1;
+				paints[id] = nextFreeColour(paintOf(id, by.instance_vars[5]), 1, id);
+				starsAt(by.x, by.y, 8);
+				if (m.kills[m.tagger] >= GUN_WIN) return endMode(colourName(by) + " WINS", 0.8);
+			}
+		}
+		m.tagger = tg;
+
+		var ranked = players.slice().sort(function (a, b) { return (m.kills[b.instance_vars[2]] || 0) - (m.kills[a.instance_vars[2]] || 0); });
+		var best = ranked[0] ? m.kills[ranked[0].instance_vars[2]] || 0 : 0;
+		m.lead = best ? ranked[0].instance_vars[2] : -1;
+		if (m.time <= 0) {
+			var top = ranked.filter(function (p) { return (m.kills[p.instance_vars[2]] || 0) === best; });
+			endMode(!best ? "NOBODY SCORED" : top.length === 1 ? colourName(top[0]) + " WINS" : top.map(colourName).slice(0, 2).join(" AND ") + " TIE");
+		}
+	}
+
+	// Back in the menu: everyone's own colour again.
+	function gunLeave(m) {
+		Object.keys(m.orig).forEach(function (id) { if (paints[id] !== undefined) paints[id] = m.orig[id]; });
 	}
 
 	// Everyone back to the start, free again, and the other side chases: one of them
