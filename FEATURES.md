@@ -133,24 +133,51 @@ The MEME POP-UPS setting turns them off.
     so those few sounds are silent in Safari (on the website too).
 - The game's engine, sprites and levels still load from the original game's host.
 
-## Planned: game modes
+## Game modes (built, switched off)
 
-Not built yet. They'll be built and approved one at a time. Once they're all
-approved, they ship switched off behind a feature flag (a variable in `src/bot.js`)
-until they're turned on.
+All built and approved, but switched off for now: the MODE row is hidden and every
+game is Classic. Set `var GAME_MODES = true;` at the top of `src/bot.js` to turn them on.
+A MODE row then appears in the CPU PLAYERS box (the host picks it online, and friends
+see everything the host does).
 
-A MODE row in the menu picks one. Classic is the game as it is now.
+- **Classic** — the game as it is.
+- **Hot Potato** — one fuse of 12 to 20 seconds burns while the potato gets passed
+  around. Whoever holds it when it runs out explodes and is out, and someone random gets
+  the next one. Last one standing wins.
+- **Infection** — whoever's caught joins the taggers (with an arrow of their own, a green
+  tint, a drunken sway and a limp). Infect everyone to win; anyone left when the timer runs
+  out wins for the runners.
+- **Freeze Tag** — catches freeze people in place, with an icy tint; a free runner touching
+  them thaws them. Anyone left frozen for 10 seconds blinks, then breaks out as a freezer.
+  Freezers glow blue and runners glow orange. Freeze everyone to win; runners win if
+  anyone's free at the end.
+- **Juggernaut** — whoever starts as it is drawn bigger, moves faster and can triple jump
+  (hard and impossible bots use it too). Anyone they catch is smashed out. Smash everyone,
+  or survive the timer.
+- **King of the Hill** — one platform glows gold and moves every 20 seconds. Standing on it
+  scores a point a second (shared between everyone on it), but not while you're it. First
+  to 25 points, or the most at the end.
+- **Reverse Tag** — everyone chases whoever has the arrow, and holding it scores a point a
+  second. Touching the holder steals it. First to 25 points, or the most at the end.
+- **Blackout** — Classic in the dark, with a soft light around each player. Every tag lights
+  the map for a moment and a flashbang lights it up fully. Bots only see who's near them.
+- **Teams** — two teams (blue and red glows), picked alternately. The team with the tagger
+  chases first: every chaser can catch, and caught runners go grey and stay put. Then
+  everyone goes back to the start and the other team chases. Catching more wins, or the
+  faster full sweep. The scoreboard shows each team's time or count.
+- **Gun Game** — everyone starts red and climbs the palette one colour at a time, with a
+  P1 to P6 label over everyone.
+  - Everyone has a gun, fired with down (no new keys). Hitting someone moves you up a
+    colour and them down one; a touch catch also moves the catcher up.
+  - The guns get harder as you climb: rifle, shotgun, lobbed grenade, pistol, then bare
+    hands on black.
+  - A catch while black takes you back to your own colour, and wins.
+  - Any hit, touch or bullet, starts the game's 3-2-1, and nobody can be hit until it's
+    over. You can't catch whoever just caught you.
+- **Sudden Death** — no timer: the whole game speeds up 15% every 10 seconds until someone
+  is caught. They're out, the speed resets and someone random is it. Last one standing.
+- **Random** — the game freezes behind a slot machine (rows of **I LOVE GAMBLING** in the
+  game's font, a reel of the modes that ticks, slows and lands with a ding), then plays
+  whatever it landed on.
 
-| Mode | How it plays | How you win |
-|---|---|---|
-| **Hot Potato** | Whoever is it has a fuse of about 10–15 seconds, reset by every tag. If it runs out, they explode (with a flashbang) and are out. | Last one standing |
-| **Infection** | Tagged players join the taggers instead of swapping. | Taggers: infect everyone. Runners: survive the timer. |
-| **Freeze Tag** | Tagged players freeze in place. A runner touching them unfreezes them. | Tagger: freeze everyone. Runners: survive the timer. |
-| **Juggernaut** | One tagger is bigger, faster and can triple jump. Everyone else runs. | Runners: survive the timer |
-| **King of the Hill** | One platform glows. Standing on it scores points, but only while you're not it. | Most points |
-| **Reverse Tag** | Everyone chases whoever has the arrow, and holding it scores points. Tagging them steals it. | Most points |
-| **Blackout** | The level is dark except for a small light around each player. Flashbangs light up the whole map for a moment. | Same as Classic |
-| **Teams** | 2v2 or 3v3. Each team takes a turn as the taggers. | Fastest team to tag everyone on the other side |
-| **Gun Game** | Every tag you make moves your colour one step down a set list. | First through the whole list |
-| **Sudden Death** | No timer. The game speeds up every 10 seconds until someone is tagged. That player is out, and it repeats. | Last one standing |
-| **Random** | Pressing START spins through the modes over a background that says **I LOVE GAMBLING** in the game's font, then lands on one. | Whatever it lands on |
+Mode catches respect moonwalks, and nobody can moonwalk while caught, frozen or chasing.
