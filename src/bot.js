@@ -49,7 +49,9 @@
 	MODES.sudden = { name: "SUDDEN DEATH", start: suddenStart, before: suddenBefore, tick: suddenTick, leave: suddenLeave,
 		clock: function (m) { return m.next - clock; }, blocksTag: suddenCatch,
 		view: function (m) { return { banner: clock < m.bannerUntil ? m.banner : "" }; } };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun", "sudden"];
+	MODES.random = { name: "RANDOM", start: rollStart, tick: rollTick, leave: rollLeave,
+		view: function (m) { return { pick: m.pick, t: clock - m.rollStart }; }, show: rollShow };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun", "sudden", "random"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -3038,8 +3040,8 @@
 	}
 
 	// A level just started: set up whatever the mode needs.
-	function startMode() {
-		var id = modeId();
+	function startMode(id) {
+		id = id || modeId();
 		mode = { id: id, layout: rt.running_layout, result: "", booms: [], boomSeq: 0, seenBoom: 0 };
 		if (MODES[id].start && net.role !== "guest") MODES[id].start(mode);
 	}
@@ -3053,7 +3055,7 @@
 	function modeAfter() {
 		if (!inLevel()) {
 			if (mode && MODES[mode.id].leave && net.role !== "guest") MODES[mode.id].leave(mode);
-			mode = null; drawModeResult(); hideHillHud(); return;
+			mode = null; drawModeResult(); hideHillHud(); hideRoll(); return;
 		}
 		if (!mode || mode.layout !== rt.running_layout) {
 			if (gvar("gameState") !== "Game") return;
@@ -3064,8 +3066,10 @@
 			if (!finishMode() && !mode.ending && def.tick) def.tick(mode, rt.dt);
 			if (def.clock) showClock(def.clock(mode));
 		}
+		if (MODES[mode.id] !== def) def = MODES[mode.id];   // Random just landed on a mode
 		if (def.show) def.show(mode, modeShown());
 		if (!def.hud) hideHillHud();
+		if (def !== MODES.random) hideRoll();
 		drawModeResult();
 	}
 
@@ -3079,6 +3083,8 @@
 
 	function modeGuest(md) {
 		if (!md || !mode) return;
+		// the host's Random landed on a mode: play that one
+		if (md.id && md.id !== mode.id && MODES[md.id]) startMode(md.id);
 		mode.result = md.result;
 		mode.x = md.x;
 		mode.xAt = clock;
@@ -4214,6 +4220,89 @@
 		}
 	}
 
+	// ---- random ----
+	// Starting a game on RANDOM freezes it behind a slot machine: rows of I LOVE
+	// GAMBLING scrolling past, and a reel of the modes that spins, ticks, slows down
+	// and lands on one. Then the game starts in that mode. Friends see the same spin
+	// and land on the same mode.
+
+	var ROLL_SPIN = 3.4, ROLL_HOLD = 1;   // seconds spinning, then showing what it landed on
+	var ROLL_ROW = 64;                    // px between names on the reel
+
+	function rollChoices() { return MODE_LIST.filter(function (id) { return id !== "classic" && id !== "random"; }); }
+
+	function rollStart(m) {
+		var choices = rollChoices();
+		m.pick = choices[Math.floor(Math.random() * choices.length)];
+		m.rollStart = clock;
+	}
+
+	// The game stands still while the reel spins, then the chosen mode takes over.
+	function rollTick(m) {
+		rt.timescale = 0;
+		if (clock - m.rollStart < ROLL_SPIN + ROLL_HOLD) return;
+		rt.timescale = 1;
+		startMode(m.pick);
+	}
+
+	function rollLeave() { rt.timescale = 1; }
+
+	var roll = { el: null, reel: null, lastRow: -1, landed: false };
+	function rollShow(m, v) {
+		if (!v.pick) return;
+		var choices = rollChoices(), target = choices.indexOf(v.pick);
+		if (!roll.el) buildRoll(choices);
+		roll.el.style.display = "block";
+		placeOver(roll.el);
+		// the reel goes round three times and eases out onto the pick
+		var t = Math.min(1, v.t / ROLL_SPIN), ease = 1 - Math.pow(1 - t, 3);
+		var pos = ease * (target + choices.length * 3), row = Math.floor(pos + 0.5);
+		roll.reel.style.transform = "translateY(" + (-pos * ROLL_ROW) + "px)";
+		if (row !== roll.lastRow && t < 1) { roll.lastRow = row; rollSound("tick"); }
+		if (t >= 1 && !roll.landed) { roll.landed = true; rollSound("ding"); }
+		roll.el.classList.toggle("landed", t >= 1);
+	}
+
+	function hideRoll() {
+		if (!roll.el || roll.el.style.display === "none") return;
+		roll.el.style.display = "none";
+		roll.lastRow = -1;
+		roll.landed = false;
+	}
+
+	function buildRoll(choices) {
+		roll.el = document.createElement("div");
+		roll.el.id = "modeRoll";
+		var rows = "";
+		for (var i = 0; i < 12; i++) {
+			var line = "";
+			for (var k = 0; k < 4; k++) line += px("I LOVE GAMBLING", 2) + '<b class="mr-gap"></b>';
+			rows += '<div class="mr-line' + (i % 2 ? " odd" : "") + '">' + line + line + "</div>";
+		}
+		// enough copies of the names for three trips round the reel and the landing
+		var names = "";
+		for (var c = 0; c < 4; c++) choices.forEach(function (id) { names += '<div class="mr-name"><span>' + px(MODES[id].name, 3) + "</span></div>"; });
+		roll.el.innerHTML = '<div class="mr-bg">' + rows + '</div><div class="mr-box"><div class="mr-reel">' + names + "</div></div>";
+		roll.reel = roll.el.querySelector(".mr-reel");
+		document.body.appendChild(roll.el);
+	}
+
+	// A click for each name going past, and a ding when it lands.
+	var rollSfx = {};
+	function rollSound(kind) {
+		if (!fb.audio) return;
+		if (!rollSfx[kind]) {
+			var a = fb.audio, len = kind === "ding" ? 0.9 : 0.04, b = a.createBuffer(1, Math.floor(a.sampleRate * len), a.sampleRate), d = b.getChannelData(0);
+			for (var i = 0; i < d.length; i++) {
+				var t = i / a.sampleRate;
+				d[i] = kind === "ding" ? (Math.sin(t * 2 * Math.PI * 1320) + 0.5 * Math.sin(t * 2 * Math.PI * 1980)) * Math.exp(-t * 4) * 0.25
+					: (Math.random() * 2 - 1) * Math.exp(-t * 120) * 0.4;
+			}
+			rollSfx[kind] = b;
+		}
+		playSound(rollSfx[kind], 0);
+	}
+
 	// ---------- settings and the guide ----------
 	// Two buttons by the game's fullscreen/sound buttons: "?" opens a paged guide to
 	// everything (with keyboard and touch versions of the controls), the gear opens
@@ -4500,7 +4589,16 @@
 		"#hillHud .hh-row:first-child{margin-top:14px}#hillHud .hh-row.on{opacity:1}" +
 		"#hillHud .hh-sw{display:block;width:18px;height:18px;border-radius:4px;box-shadow:0 0 0 2px #fff,0 0 0 4px #000}" +
 		"#hillHud .hh-row.on .hh-sw{box-shadow:0 0 0 2px #ffd23c,0 0 0 4px #000,0 0 10px 4px rgba(255,210,60,.7)}" +
-		"#modeResult{z-index:12;display:none}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}#modeResult.banner>span{top:150px}" +
+		"#modeResult{z-index:12;display:none}" +
+		// Random's slot machine: I LOVE GAMBLING scrolling diagonally behind a reel of the modes
+		"#modeRoll{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;z-index:13;display:none;overflow:hidden;pointer-events:none;background:radial-gradient(circle at 50% 50%,#3b0d4f,#12041c 75%)}" +
+		"#modeRoll .mr-bg{position:absolute;left:-300px;top:-80px;transform:rotate(-12deg);animation:mrScroll 2.4s linear infinite}" +
+		"#modeRoll .mr-line{white-space:nowrap;height:48px;font-size:30px;opacity:.28;filter:sepia(1) saturate(6) hue-rotate(5deg)}#modeRoll .mr-line.odd{margin-left:-160px;opacity:.18;filter:none}" +
+		"#modeRoll .mr-gap{display:inline-block;width:40px}" +
+		"@keyframes mrScroll{from{transform:rotate(-12deg) translateX(0)}to{transform:rotate(-12deg) translateX(-428px)}}" +
+		"#modeRoll .mr-box{position:absolute;left:192px;top:" + (288 - 32) + "px;width:640px;height:64px;overflow:hidden;background:#12041c;border-radius:10px;box-shadow:0 0 0 4px #ffd23c,0 0 0 8px #000,0 0 40px 10px rgba(255,210,60,.45)}" +
+		"#modeRoll .mr-name{height:64px;display:flex;align-items:center;justify-content:center;font-size:40px}" +
+		"#modeRoll.landed .mr-box{animation:mrFlash .25s steps(2) 3}@keyframes mrFlash{50%{box-shadow:0 0 0 4px #fff,0 0 0 8px #000,0 0 60px 20px rgba(255,255,255,.8)}}#modeResult>span{position:absolute;left:0;right:0;top:318px;text-align:center;font-size:44px}#modeResult.banner>span{top:150px}" +
 		"#extraSlots .xs{position:absolute;top:" + (SLOT_Y - 45) + "px;width:152px;height:90px;display:flex;align-items:center;justify-content:center;image-rendering:pixelated}" +
 		"#tagCorner{z-index:11;display:none}#tagModal{z-index:70;display:none}" +
 		// beside the game's own fullscreen and sound buttons, in their style
