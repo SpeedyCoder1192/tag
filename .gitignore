@@ -35,3 +35,6 @@ tools/*
 !tools/clip.py
 !tools/palette.json
 !tools/smoke.mjs
+
+# the all-in-one copy with game modes on (built locally, not published)
+/tag.html
