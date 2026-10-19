@@ -24,7 +24,7 @@ The short version is below. [FEATURES.md](FEATURES.md) has the full list.
   you can't be tagged. 4 second cooldown.
 - **Touch controls** — a joystick and buttons appear when you touch the screen.
 - **Play offline** — the button at the top left of the main menu saves the whole game
-  as one file that runs with no internet (everything but online play).
+  as one file that runs with no internet (online play works in it too, with internet).
 - **Splash** — a replay of a real bot chase, a flashbang, and the caption.
 - **How to play** — the **?** button opens a guide to everything, with keyboard and
   touch versions of the controls. It opens by itself the first time.

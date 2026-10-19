@@ -2063,7 +2063,7 @@
 			var s = document.createElement("script");
 			s.src = "https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js";
 			s.onload = resolve;
-			s.onerror = function () { reject(new Error("Couldn't load the online library.")); };
+			s.onerror = function () { reject(new Error("Couldn't load the online library. Online play needs internet.")); };
 			document.head.appendChild(s);
 		});
 	}
@@ -2628,7 +2628,6 @@
 
 	var panel = document.createElement("div");
 	panel.id = "botPanel";
-	if (window.TAG_OFFLINE) panel.className = "offline";
 	panel.innerHTML =
 		'<div class="bp-box bp-left">' +
 		'<div class="bp-title">' + px("CPU PLAYERS", 2) + "</div>" +
@@ -2650,7 +2649,6 @@
 		"#botPanel{position:fixed;left:0;top:0;width:1024px;height:576px;transform-origin:0 0;z-index:10;display:none;" +
 		"pointer-events:none;color:#fff;user-select:none;font:14px/1 monospace}" +
 		// the free columns either side of the menu text, below the slots and above the notification line
-		"#botPanel.offline .bp-right>.bp-sel,#botPanel.offline .bp-right>.bp-note{display:none}" +
 		"#botPanel .bp-box{position:absolute;top:282px;width:268px;box-sizing:border-box;padding:10px 12px 8px;pointer-events:auto;" +
 		"background:rgba(0,0,0,.59);border-radius:12px;" + FRAME + ",0 5px 0 2px #000}" +
 		"#botPanel .bp-left{left:10px}#botPanel .bp-right{left:746px}" +
@@ -2757,10 +2755,7 @@
 			t ? px("SUGGESTED: " + t.suggest) + ' <button data-a="retest">' + px("RE-TEST") + "</button>" : "");
 
 		var html;
-		if (window.TAG_OFFLINE) {
-			html = note("THIS IS THE OFFLINE COPY. ONLINE PLAY AND VOICE CHAT NEED THE WEBSITE:") +
-				'<div class="bp-note">' + px("SPEEDYCODER1192") + "<br>" + px(".QZZ.IO/TAG") + "</div>";
-		} else if (net.role === "host") {
+		if (net.role === "host") {
 			html = '<div class="bp-row"><div class="bp-code">' + px(net.peer && net.peer.open ? net.code : "...", 2) + "</div>" +
 				'<button data-a="stop">' + px("STOP") + "</button></div>" +
 				note("FRIENDS: " + (net.guests.length ? net.guests.map(function (g) {
@@ -4392,7 +4387,7 @@
 		{ title: "SETTINGS", lines: [
 			"THE GEAR BUTTON HAS SOUND, FLASHING, SHAKE, POP-UPS, PING TAGS, THE INTRO, DOUBLE-TAP SPEED AND THE TOUCH PAD.",
 			"SETTINGS ARE KEPT ON THIS DEVICE.",
-			"PLAY OFFLINE (TOP LEFT) SAVES THE WHOLE GAME AS ONE FILE. OPEN IT ANY TIME, NO INTERNET NEEDED, JUST NOT ONLINE PLAY.",
+			"PLAY OFFLINE (TOP LEFT) SAVES THE WHOLE GAME AS ONE FILE. OPEN IT ANY TIME, NO INTERNET NEEDED (ONLINE PLAY STILL NEEDS IT).",
 			"[?] OPENS THIS GUIDE AGAIN."] }
 	];
 
