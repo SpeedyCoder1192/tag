@@ -46,7 +46,10 @@
 		chaseable: function (m, slot) { return slot !== gvar("taggerID") && !isPayback(m, slot); },
 		view: function (m) { return { level: m.level, shots: m.shots.map(function (s) { return [s.id, Math.round(s.x), Math.round(s.y), Math.round(s.vx), Math.round(s.vy), s.nade ? 1 : 0]; }) }; },
 		show: gunShow };
-	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun"];
+	MODES.sudden = { name: "SUDDEN DEATH", start: suddenStart, before: suddenBefore, tick: suddenTick, leave: suddenLeave,
+		clock: function (m) { return m.next - clock; }, blocksTag: suddenCatch,
+		view: function (m) { return { banner: clock < m.bannerUntil ? m.banner : "" }; } };
+	var MODE_LIST = ["classic", "potato", "infection", "freeze", "juggernaut", "hill", "reverse", "blackout", "teams", "gun", "sudden"];
 	var T_SLOT = 9, T_PLAYER = 18, T_FAST = 22, T_BOUNCE = 36;
 	var STEP = 1 / 60;
 	var G = 2000, MAX_FALL = 1000, ACC = 1500, DEC = 1500;
@@ -4145,6 +4148,70 @@
 			glw.setTexture(shotTex.bullet);
 			glw.quadTex(bx + nx, by + ny, fx + nx, fy + ny, fx - nx, fy - ny, bx - nx, by - ny, FULL_UV);
 		});
+	}
+
+	// ---- sudden death ----
+	// No round timer: instead the whole game speeds up every 10 seconds (running,
+	// jumping, the 3-2-1, everything) until someone's caught. They're out, the speed
+	// drops back to normal, someone random is it, and it starts again. Last one
+	// standing wins. The clock counts down to the next speed-up.
+
+	var SD_EVERY = 10, SD_GAIN = 0.15, SD_MAX = 2.5;
+
+	function suddenStart(m) {
+		m.speed = 1;
+		m.next = clock + SD_EVERY;
+		m.bannerUntil = 0;
+	}
+
+	// The game's own freeze-frame on a tag slows time right down for a moment, then
+	// puts it back to normal: leave that alone, and put our speed back after.
+	function suddenBefore(m) {
+		holdTimer();
+		if (rt.timescale > 0.5) rt.timescale = m.ending ? 1 : m.speed;
+	}
+
+	function suddenLeave() { rt.timescale = 1; }
+
+	// The game's tagger caught someone: they're out (done in the tick, once).
+	function suddenCatch(m, slot) {
+		if (!m.started) return false;   // the game picking its first tagger
+		if (m.out === undefined) m.out = slot;
+		return true;
+	}
+
+	function suddenTick(m, dt) {
+		m.started = true;
+		var players = instances(T_PLAYER);
+		if (m.out !== undefined) {
+			var gone = bySlot(players, m.out);
+			m.out = undefined;
+			if (gone) {
+				boomAt(gone.x, gone.y, true);
+				if (isLocal(gone.instance_vars[4])) flashbang("out");
+				m.banner = colourName(gone) + " IS OUT";
+				m.bannerUntil = clock + 2;
+				rt.DestroyInstance(gone);
+				players = players.filter(function (p) { return p !== gone; });
+				if (players.length <= 1) {
+					rt.timescale = 1;
+					return endMode(players.length ? colourName(players[0]) + " WINS" : "NOBODY WINS", 1.2);
+				}
+				// back to normal speed, and a new round with someone random as it
+				m.speed = 1;
+				rt.timescale = 1;
+				m.next = clock + SD_EVERY;
+				tagFor(-1, players[Math.floor(Math.random() * players.length)].instance_vars[2], -1);
+				return;
+			}
+		}
+		if (clock >= m.next) {
+			m.next = clock + SD_EVERY;
+			if (m.speed >= SD_MAX) return;
+			m.speed = Math.min(SD_MAX, m.speed + SD_GAIN);
+			m.banner = "FASTER";
+			m.bannerUntil = clock + 1.2;
+		}
 	}
 
 	// ---------- settings and the guide ----------
