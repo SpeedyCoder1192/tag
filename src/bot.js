@@ -8,7 +8,7 @@
 	var MAX_PLAYERS = 6;   // the game has 4 built-in slots; players 5 and 6 are added on top
 
 	// Game modes (see "game modes" below). false hides the MODE row and every game is Classic.
-	var GAME_MODES = false;
+	var GAME_MODES = true;
 	var MODES = {
 		classic: { name: "CLASSIC" },
 		potato: { name: "HOT POTATO", start: potatoStart, before: holdTimer, tick: potatoTick, clock: function (m) { return m.fuse; } },

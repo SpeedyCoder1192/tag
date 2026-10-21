@@ -133,12 +133,11 @@ The MEME POP-UPS setting turns them off.
     so those few sounds are silent in Safari (on the website too).
 - The game's engine, sprites and levels still load from the original game's host.
 
-## Game modes (built, switched off)
+## Game modes
 
-All built and approved, but switched off for now: the MODE row is hidden and every
-game is Classic. Set `var GAME_MODES = true;` at the top of `src/bot.js` to turn them on.
-A MODE row then appears in the CPU PLAYERS box (the host picks it online, and friends
-see everything the host does).
+A MODE row in the CPU PLAYERS box (the host picks it online, and friends see everything
+the host does). `var GAME_MODES = false;` at the top of `src/bot.js` hides the row and
+makes every game Classic.
 
 - **Classic** — the game as it is.
 - **Hot Potato** — one fuse of 12 to 20 seconds burns while the potato gets passed

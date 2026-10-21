@@ -31,9 +31,8 @@ The short version is below. [FEATURES.md](FEATURES.md) has the full list.
 - **Settings** — the gear button: intro, effects volume, gentle flashing (dimmer white,
   no flicker), screen shake, the meme pop-ups, ping tags, double-tap speed, and the
   touch pad (auto/on/off, size, which side the stick is on). Kept per device.
-- **Game modes** (switched off for now) — 11 modes, from Hot Potato and Freeze Tag to Gun
-  Game and Random. Set `GAME_MODES = true` at the top of `src/bot.js` to turn them on.
-  See [FEATURES.md](FEATURES.md).
+- **Game modes** — 11 modes, from Hot Potato and Freeze Tag to Gun Game and Random,
+  picked in the MODE row of the CPU PLAYERS box. See [FEATURES.md](FEATURES.md).
 - **Easter eggs** — be orange and land on someone from above. Or catch someone in the right
   colours for an Among Us kill, then get them back.
 
